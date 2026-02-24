@@ -485,7 +485,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
                 : {}),
             };
           }
-          await handler(inbound);
+          void handler(inbound).catch(() => {
+            // Isolate per-message handler failures from polling loop.
+          });
         }
       } catch (error) {
         if (signal.aborted || !this.running) {

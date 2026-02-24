@@ -45,8 +45,12 @@ export abstract class BaseCodeAgentAdapter implements AgentAdapter {
       prompt: string;
       messages: AgentTurnRequest["messages"];
       systemDirectives: string[];
+      abortSignal?: AbortSignal;
       metadata?: Record<string, unknown>;
     };
+    if (request.abortSignal) {
+      backendRequest.abortSignal = request.abortSignal;
+    }
     if (request.metadata) {
       backendRequest.metadata = request.metadata;
     }

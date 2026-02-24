@@ -2,6 +2,7 @@ import type { AgentAdapter } from "./agent.js";
 import { AgentRegistry } from "./agent.js";
 import { ConversationCommandService } from "./commands.js";
 import { HookBus } from "./hooks.js";
+import { isTurnAbortedError, toTurnAbortedError } from "./abort.js";
 import type { Skill } from "./skills.js";
 import { SkillRuntime } from "./skills.js";
 import { ToolRuntime } from "./tools.js";
@@ -62,6 +63,7 @@ export class ChatOrchestrator {
   readonly commands: ConversationCommandService;
 
   private readonly sessionChains = new Map<string, Promise<ChatTurnResult>>();
+  private readonly runningTurns = new Map<string, AbortController>();
   private readonly defaultAgentId: AgentId;
 
   constructor(deps: ChatOrchestratorDeps = {}) {
@@ -96,6 +98,19 @@ export class ChatOrchestrator {
     const initialAgentId =
       params.agentId ?? this.sessions.snapshot(params.sessionId)?.agentId ?? this.resolveDefaultAgentId();
 
+    const commandResult = this.commands.execute({
+      sessionId: params.sessionId,
+      currentAgentId: initialAgentId,
+      input: params.input,
+    });
+    if (commandResult.handled) {
+      return await this.emitCommandTurn(
+        params,
+        commandResult.agentId ?? initialAgentId,
+        commandResult.finalText,
+      );
+    }
+
     const previous = this.sessionChains.get(params.sessionId) ?? Promise.resolve({
       agentId: initialAgentId,
       sessionId: params.sessionId,
@@ -124,137 +139,165 @@ export class ChatOrchestrator {
     }
   }
 
+  cancelRunningTurn(sessionId: string, reason?: string): boolean {
+    const controller = this.runningTurns.get(sessionId);
+    if (!controller || controller.signal.aborted) {
+      return false;
+    }
+    controller.abort(
+      toTurnAbortedError(reason ?? `Turn interrupted for session ${sessionId}`, "turn interrupted"),
+    );
+    return true;
+  }
+
   private async chatUnsafe(params: ChatTurnParams): Promise<ChatTurnResult> {
-    const currentAgentId = this.resolveAgentId(params);
-    const commandResult = this.commands.execute({
-      sessionId: params.sessionId,
-      currentAgentId,
-      input: params.input,
-    });
-    if (commandResult.handled) {
-      const result = this.commandTurn(
-        params.sessionId,
-        commandResult.agentId ?? currentAgentId,
-        commandResult.finalText,
-      );
-      if (params.onEvent) {
-        for (const event of result.events) {
+    const sessionAbort = new AbortController();
+    const cleanupExternalAbort = this.bindExternalAbort(params.abortSignal, sessionAbort);
+    this.runningTurns.set(params.sessionId, sessionAbort);
+
+    const ensureNotAborted = () => {
+      if (sessionAbort.signal.aborted) {
+        throw toTurnAbortedError(sessionAbort.signal.reason, "turn aborted");
+      }
+    };
+
+    try {
+      ensureNotAborted();
+
+      const currentAgentId = this.resolveAgentId(params);
+      const adapter = this.registry.require(currentAgentId);
+
+      ensureNotAborted();
+      this.sessions.appendMessage(params.sessionId, currentAgentId, userMessage(params.input));
+      const snapshot = this.sessions.snapshot(params.sessionId);
+      if (!snapshot) {
+        throw new Error(`session not found after append: ${params.sessionId}`);
+      }
+
+      const applicableSkills = this.skills.listApplicable(currentAgentId);
+      const sessionMetadata = this.sessions.getMetadata(params.sessionId);
+      const mergedMetadata: Record<string, unknown> = {
+        ...(params.metadata ?? {}),
+      };
+      if (Object.keys(sessionMetadata).length > 0) {
+        mergedMetadata.session = sessionMetadata;
+      }
+
+      const baseRequest = {
+        agentId: currentAgentId,
+        sessionId: params.sessionId,
+        prompt: params.input,
+        messages: [...snapshot.messages],
+        systemDirectives: [],
+        skills: this.skills.describe(applicableSkills),
+        abortSignal: sessionAbort.signal,
+      } as AgentTurnRequest;
+      if (Object.keys(mergedMetadata).length > 0) {
+        baseRequest.metadata = mergedMetadata;
+      }
+
+      const skillPatch = await this.skills.runBeforeTurn(applicableSkills, baseRequest);
+      const hookPatch = await this.hooks.runBeforeTurn({ request: baseRequest });
+
+      const request: AgentTurnRequest = {
+        ...baseRequest,
+        systemDirectives: [
+          ...(skillPatch.systemDirectives ?? []),
+          ...(hookPatch.systemDirectives ?? []),
+        ],
+        metadata: {
+          ...(baseRequest.metadata ?? {}),
+          ...(skillPatch.metadata ?? {}),
+          ...(hookPatch.metadata ?? {}),
+        },
+      };
+
+      const events: AgentEvent[] = [];
+      const emit = async (event: AgentEvent) => {
+        events.push(event);
+        await this.skills.runOnEvent(applicableSkills, request, event);
+        await this.hooks.runOnEvent({ request, event });
+        if (params.onEvent) {
           await params.onEvent(event);
         }
+      };
+
+      await emit({
+        type: "status",
+        phase: "queued",
+        message: "任务已进入队列。",
+        at: now(),
+      });
+
+      await emit({
+        type: "status",
+        phase: "running",
+        message: `${adapter.displayName} 开始处理请求。`,
+        at: now(),
+      });
+
+      ensureNotAborted();
+      let turn;
+      try {
+        turn = await adapter.runTurn(request, emit);
+      } catch (error) {
+        if (sessionAbort.signal.aborted || isTurnAbortedError(error)) {
+          await emit({
+            type: "status",
+            phase: "running",
+            message: "当前任务已被中断，正在切换到最新输入。",
+            at: now(),
+          });
+          throw toTurnAbortedError(error, "turn aborted");
+        }
+        throw error;
       }
+      const sessionMetadataPatch = this.extractSessionMetadataPatch(turn.raw);
+      if (sessionMetadataPatch) {
+        this.sessions.setMetadata(params.sessionId, currentAgentId, sessionMetadataPatch);
+      }
+
+      await emit({
+        type: "status",
+        phase: "finalizing",
+        message: "正在整理最终答复。",
+        at: now(),
+      });
+
+      const readable = this.readability.normalize(turn.finalText);
+
+      await emit({
+        type: "result",
+        text: readable,
+        at: now(),
+      });
+
+      await emit({
+        type: "status",
+        phase: "completed",
+        message: "任务完成。",
+        at: now(),
+      });
+
+      this.sessions.appendMessage(params.sessionId, currentAgentId, assistantMessage(readable));
+
+      const result: ChatTurnResult = {
+        agentId: currentAgentId,
+        sessionId: params.sessionId,
+        finalText: readable,
+        events,
+      };
+
+      await this.skills.runAfterTurn(applicableSkills, request, result);
+      await this.hooks.runAfterTurn({ request, result });
+
       return result;
-    }
-
-    const adapter = this.registry.require(currentAgentId);
-
-    this.sessions.appendMessage(params.sessionId, currentAgentId, userMessage(params.input));
-    const snapshot = this.sessions.snapshot(params.sessionId);
-    if (!snapshot) {
-      throw new Error(`session not found after append: ${params.sessionId}`);
-    }
-
-    const applicableSkills = this.skills.listApplicable(currentAgentId);
-    const sessionMetadata = this.sessions.getMetadata(params.sessionId);
-    const mergedMetadata: Record<string, unknown> = {
-      ...(params.metadata ?? {}),
-    };
-    if (Object.keys(sessionMetadata).length > 0) {
-      mergedMetadata.session = sessionMetadata;
-    }
-
-    const baseRequest = {
-      agentId: currentAgentId,
-      sessionId: params.sessionId,
-      prompt: params.input,
-      messages: [...snapshot.messages],
-      systemDirectives: [],
-      skills: this.skills.describe(applicableSkills),
-    } as AgentTurnRequest;
-    if (Object.keys(mergedMetadata).length > 0) {
-      baseRequest.metadata = mergedMetadata;
-    }
-
-    const skillPatch = await this.skills.runBeforeTurn(applicableSkills, baseRequest);
-    const hookPatch = await this.hooks.runBeforeTurn({ request: baseRequest });
-
-    const request: AgentTurnRequest = {
-      ...baseRequest,
-      systemDirectives: [
-        ...(skillPatch.systemDirectives ?? []),
-        ...(hookPatch.systemDirectives ?? []),
-      ],
-      metadata: {
-        ...(baseRequest.metadata ?? {}),
-        ...(skillPatch.metadata ?? {}),
-        ...(hookPatch.metadata ?? {}),
-      },
-    };
-
-    const events: AgentEvent[] = [];
-    const emit = async (event: AgentEvent) => {
-      events.push(event);
-      await this.skills.runOnEvent(applicableSkills, request, event);
-      await this.hooks.runOnEvent({ request, event });
-      if (params.onEvent) {
-        await params.onEvent(event);
+    } finally {
+      cleanupExternalAbort();
+      if (this.runningTurns.get(params.sessionId) === sessionAbort) {
+        this.runningTurns.delete(params.sessionId);
       }
-    };
-
-    await emit({
-      type: "status",
-      phase: "queued",
-      message: "任务已进入队列。",
-      at: now(),
-    });
-
-    await emit({
-      type: "status",
-      phase: "running",
-      message: `${adapter.displayName} 开始处理请求。`,
-      at: now(),
-    });
-
-    const turn = await adapter.runTurn(request, emit);
-    const sessionMetadataPatch = this.extractSessionMetadataPatch(turn.raw);
-    if (sessionMetadataPatch) {
-      this.sessions.setMetadata(params.sessionId, currentAgentId, sessionMetadataPatch);
     }
-
-    await emit({
-      type: "status",
-      phase: "finalizing",
-      message: "正在整理最终答复。",
-      at: now(),
-    });
-
-    const readable = this.readability.normalize(turn.finalText);
-
-    await emit({
-      type: "result",
-      text: readable,
-      at: now(),
-    });
-
-    await emit({
-      type: "status",
-      phase: "completed",
-      message: "任务完成。",
-      at: now(),
-    });
-
-    this.sessions.appendMessage(params.sessionId, currentAgentId, assistantMessage(readable));
-
-    const result: ChatTurnResult = {
-      agentId: currentAgentId,
-      sessionId: params.sessionId,
-      finalText: readable,
-      events,
-    };
-
-    await this.skills.runAfterTurn(applicableSkills, request, result);
-    await this.hooks.runAfterTurn({ request, result });
-
-    return result;
   }
 
   private resolveDefaultAgentId(): AgentId {
@@ -269,6 +312,41 @@ export class ChatOrchestrator {
       return params.agentId;
     }
     return this.sessions.snapshot(params.sessionId)?.agentId ?? this.resolveDefaultAgentId();
+  }
+
+  private bindExternalAbort(
+    external: AbortSignal | undefined,
+    target: AbortController,
+  ): () => void {
+    if (!external) {
+      return () => {};
+    }
+
+    const onAbort = () => {
+      target.abort(toTurnAbortedError(external.reason, "turn aborted by caller"));
+    };
+
+    if (external.aborted) {
+      onAbort();
+      return () => {};
+    }
+
+    external.addEventListener("abort", onAbort, { once: true });
+    return () => external.removeEventListener("abort", onAbort);
+  }
+
+  private async emitCommandTurn(
+    params: ChatTurnParams,
+    agentId: AgentId,
+    text: string | undefined,
+  ): Promise<ChatTurnResult> {
+    const result = this.commandTurn(params.sessionId, agentId, text);
+    if (params.onEvent) {
+      for (const event of result.events) {
+        await params.onEvent(event);
+      }
+    }
+    return result;
   }
 
   private commandTurn(sessionId: string, agentId: AgentId, text: string | undefined): ChatTurnResult {

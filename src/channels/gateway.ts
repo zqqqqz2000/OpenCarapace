@@ -1,4 +1,5 @@
 import { ChatOrchestrator } from "../core/orchestrator.js";
+import { isTurnAbortedError } from "../core/abort.js";
 import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
 import { ChannelRegistry } from "./registry.js";
 import { buildChannelSessionId } from "./session-key.js";
@@ -77,6 +78,11 @@ function resolveCommandText(event: Extract<AgentEvent, { type: "command" }>): st
     return payloadText.trim();
   }
   return undefined;
+}
+
+function looksLikeSlashCommand(input: string): boolean {
+  const trimmed = input.trim();
+  return /^\/\S+/.test(trimmed);
 }
 
 type TurnRelayOptions = {
@@ -279,6 +285,21 @@ export class ChannelGateway {
     const sessionId = buildChannelSessionId(message);
     const agentId = this.resolveAgentId(message.channelId);
     const relay = new ChannelTurnRelay(channel, message);
+    const isCommandMessage = looksLikeSlashCommand(message.text);
+    const steerTriggered =
+      !isCommandMessage &&
+      this.orchestrator.cancelRunningTurn(
+        sessionId,
+        `Steered by newer message ${message.messageId ?? "(no-message-id)"}`,
+      );
+
+    if (steerTriggered) {
+      await this.sendAuxiliaryMessage(
+        channel,
+        message,
+        "已收到新消息，正在中断当前任务并按最新输入继续。",
+      );
+    }
 
     try {
       const result = await this.orchestrator.chat({
@@ -297,6 +318,7 @@ export class ChannelGateway {
           attachmentPaths: message.attachmentPaths,
           imagePaths: message.imagePaths,
           rawInbound: message.raw,
+          steer: steerTriggered,
           ...(message.metadata ?? {}),
         },
         onEvent: async (event) => {
@@ -307,6 +329,15 @@ export class ChannelGateway {
       await relay.finalize(result);
       return result;
     } catch (error) {
+      if (isTurnAbortedError(error)) {
+        return {
+          agentId,
+          sessionId,
+          finalText: "",
+          events: [],
+        };
+      }
+
       const reason = error instanceof Error ? error.message : String(error);
       const failure: ChannelOutboundMessage = {
         channelId: channel.id,
@@ -325,6 +356,28 @@ export class ChannelGateway {
       await channel.sendMessage(failure);
       throw error;
     }
+  }
+
+  private async sendAuxiliaryMessage(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    text: string,
+  ): Promise<void> {
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text,
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
   }
 
   private resolveAgentId(channelId: ChannelId): AgentId {

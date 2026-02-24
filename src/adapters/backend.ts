@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
+import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
 
 export type BackendMode = "sdk" | "cli" | "hook";
 
@@ -8,6 +9,7 @@ export type BackendRunRequest = {
   prompt: string;
   messages: AgentTurnRequest["messages"];
   systemDirectives: string[];
+  abortSignal?: AbortSignal;
   metadata?: Record<string, unknown>;
 };
 
@@ -66,6 +68,10 @@ export class CliAgentBackend implements AgentBackend {
   constructor(private readonly options: CliAgentBackendOptions) {}
 
   async execute(request: BackendRunRequest, sink: AgentEventSink): Promise<BackendRunResult> {
+    if (request.abortSignal?.aborted) {
+      throw toTurnAbortedError(request.abortSignal.reason, "cli backend aborted");
+    }
+
     const promptMode = this.options.promptMode ?? "stdin";
     const promptArgToken = this.options.promptArgToken ?? "{{prompt}}";
     const args = [...(this.options.args ?? [])];
@@ -93,8 +99,50 @@ export class CliAgentBackend implements AgentBackend {
         stdio: ["pipe", "pipe", "pipe"],
       });
 
+      let settled = false;
       let stdout = "";
       let stderr = "";
+      let abortListener: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (abortListener) {
+          abortListener();
+          abortListener = undefined;
+        }
+      };
+
+      const safeReject = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const safeResolve = (result: BackendRunResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      if (request.abortSignal) {
+        const onAbort = () => {
+          child.kill("SIGTERM");
+          safeReject(toTurnAbortedError(request.abortSignal?.reason, "cli backend aborted"));
+        };
+        if (request.abortSignal.aborted) {
+          onAbort();
+          return;
+        }
+        request.abortSignal.addEventListener("abort", onAbort, { once: true });
+        abortListener = () => {
+          request.abortSignal?.removeEventListener("abort", onAbort);
+        };
+      }
 
       child.stdout.on("data", (chunk) => {
         const text = String(chunk);
@@ -111,15 +159,22 @@ export class CliAgentBackend implements AgentBackend {
       });
 
       child.on("error", (error) => {
-        reject(error);
+        safeReject(error);
       });
 
       child.on("close", (code) => {
-        if (code !== 0) {
-          reject(new Error(`cli backend failed (code=${code}): ${stderr.trim() || "unknown error"}`));
+        if (settled) {
           return;
         }
-        resolve({
+        if (request.abortSignal?.aborted) {
+          safeReject(new TurnAbortedError("cli backend aborted"));
+          return;
+        }
+        if (code !== 0) {
+          safeReject(new Error(`cli backend failed (code=${code}): ${stderr.trim() || "unknown error"}`));
+          return;
+        }
+        safeResolve({
           finalText: stdout.trim(),
           raw: {
             stderr: stderr.trim(),

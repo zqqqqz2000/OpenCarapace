@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { BaseCodeAgentAdapter } from "./base.js";
 import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend.js";
 import { SdkAgentBackend } from "./backend.js";
+import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
 import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,6 +128,13 @@ function resolveAttachmentPaths(metadata: BackendRunRequest["metadata"]): string
   return [...new Set(attachmentPaths)];
 }
 
+function resolveSteerFlag(metadata: BackendRunRequest["metadata"]): boolean {
+  if (!isRecord(metadata)) {
+    return false;
+  }
+  return metadata.steer === true;
+}
+
 function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): string {
   const sections: string[] = [];
 
@@ -144,6 +152,12 @@ function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): strin
 
   if (depth) {
     sections.push(`Thinking depth preference: ${depth}. Keep user-visible output concise and actionable.`);
+  }
+
+  if (resolveSteerFlag(request.metadata)) {
+    sections.push(
+      "Steer update: user sent a newer message during an ongoing run. Prioritize the latest user request.",
+    );
   }
 
   const attachmentPaths = resolveAttachmentPaths(request.metadata);
@@ -190,6 +204,10 @@ class CodexCliSessionBackend implements AgentBackend {
   ) {}
 
   async execute(request: BackendRunRequest, sink: AgentEventSink): Promise<BackendRunResult> {
+    if (request.abortSignal?.aborted) {
+      throw toTurnAbortedError(request.abortSignal.reason, "codex turn aborted before start");
+    }
+
     const sessionMetadata = resolveSessionMetadata(request);
     const previousThreadId = resolveSessionString(sessionMetadata, "codex_thread_id");
     const preferredModel = resolveSessionString(sessionMetadata, "model");
@@ -221,6 +239,7 @@ class CodexCliSessionBackend implements AgentBackend {
         stdio: ["pipe", "pipe", "pipe"],
       });
 
+      let settled = false;
       let stdoutRaw = "";
       let stderr = "";
       let lineBuffer = "";
@@ -229,6 +248,47 @@ class CodexCliSessionBackend implements AgentBackend {
       const agentMessages: string[] = [];
       let reasoningNotified = false;
       let eventChain = Promise.resolve();
+      let abortListener: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (abortListener) {
+          abortListener();
+          abortListener = undefined;
+        }
+      };
+
+      const safeReject = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const safeResolve = (result: BackendRunResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      if (request.abortSignal) {
+        const onAbort = () => {
+          child.kill("SIGTERM");
+          safeReject(toTurnAbortedError(request.abortSignal?.reason, "codex turn aborted"));
+        };
+        if (request.abortSignal.aborted) {
+          onAbort();
+          return;
+        }
+        request.abortSignal.addEventListener("abort", onAbort, { once: true });
+        abortListener = () => {
+          request.abortSignal?.removeEventListener("abort", onAbort);
+        };
+      }
 
       const handleLine = async (lineRaw: string): Promise<void> => {
         const line = lineRaw.trim();
@@ -318,22 +378,30 @@ class CodexCliSessionBackend implements AgentBackend {
       });
 
       child.on("error", (error) => {
-        reject(error);
+        safeReject(error);
       });
 
       child.on("close", async (code) => {
+        if (settled) {
+          return;
+        }
         try {
           if (lineBuffer.trim()) {
             await handleLine(lineBuffer);
           }
           await eventChain;
         } catch (error) {
-          reject(error);
+          safeReject(error);
+          return;
+        }
+
+        if (request.abortSignal?.aborted) {
+          safeReject(new TurnAbortedError("codex turn aborted"));
           return;
         }
 
         if (code !== 0) {
-          reject(
+          safeReject(
             new Error(
               `codex cli backend failed (code=${code}): ${stderr.trim() || "unknown error"}`,
             ),
@@ -360,7 +428,7 @@ class CodexCliSessionBackend implements AgentBackend {
           sessionMetadata: Record<string, unknown>;
         };
 
-        resolve({
+        safeResolve({
           finalText,
           raw,
         });
@@ -374,6 +442,10 @@ class CodexCliSessionBackend implements AgentBackend {
 export class DeterministicCodexBackend extends SdkAgentBackend {
   constructor() {
     super(async (request, sink) => {
+      if (request.abortSignal?.aborted) {
+        throw toTurnAbortedError(request.abortSignal.reason, "deterministic codex backend aborted");
+      }
+
       const tips = [
         "正在读取任务上下文...",
         "正在拆分可执行步骤...",
@@ -381,6 +453,9 @@ export class DeterministicCodexBackend extends SdkAgentBackend {
       ];
 
       for (const tip of tips) {
+        if (request.abortSignal?.aborted) {
+          throw toTurnAbortedError(request.abortSignal.reason, "deterministic codex backend aborted");
+        }
         await sink({
           type: "command",
           command: {

@@ -9,6 +9,8 @@
 - Channel-first 网关（Telegram + Slack/Discord/WeChat bridge）
 - Telegram 图片入站（下载到临时目录并把本地路径注入 Codex prompt）
 - Telegram `/command` 自动补全（`setMyCommands`）
+- 运行中 steer：新非命令输入会打断当前任务并切换到最新输入
+- 运行中并行命令：`/command` 类消息可与当前任务并行执行
 - `/command` 会话控制（如 `/status`、`/agent`、`/memory`）
 - 轻量工具命令（`/tools`、`/grep`、`/skill`）
 - 运行中通知事件（`notify` / `progress` / `ask_user`）
@@ -158,6 +160,9 @@ bun run opencarapace gateway
 
 - 启动时会调用 Telegram `setMyCommands`
 - 用户在聊天框输入 `/` 可直接看到可用命令（如 `help`/`new`/`model`/`depth`/`sandbox`）
+- 当任务运行中：
+  - 新的非命令消息会触发 steer（中断当前任务并切换到最新输入）
+  - `/` 命令消息会并行执行，不阻塞当前任务
 
 附件消息处理（Telegram 原生 channel）：
 

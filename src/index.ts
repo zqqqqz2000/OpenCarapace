@@ -22,6 +22,7 @@ import { registerDefaultTools } from "./presets/tool-packs.js";
 
 export * from "./core/types.js";
 export * from "./core/agent.js";
+export * from "./core/abort.js";
 export * from "./core/hooks.js";
 export * from "./core/naming.js";
 export * from "./core/session.js";

@@ -75,6 +75,7 @@ export type AgentTurnRequest = {
   messages: ChatMessage[];
   systemDirectives: string[];
   skills: AppliedSkillDescriptor[];
+  abortSignal?: AbortSignal;
   limits?: {
     maxOutputChars?: number;
   };
@@ -90,6 +91,7 @@ export type ChatTurnParams = {
   agentId?: AgentId;
   sessionId: string;
   input: string;
+  abortSignal?: AbortSignal;
   metadata?: Record<string, unknown>;
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 };

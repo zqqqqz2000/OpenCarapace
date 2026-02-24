@@ -75,12 +75,14 @@ describe("Codex prompt attachment path injection", () => {
       agentId: "codex",
       input: "请看图并告诉我主要内容",
       metadata: {
+        steer: true,
         attachmentPaths: ["/tmp/opencarapace/voice-a.ogg"],
         imagePaths: ["/tmp/opencarapace/image-a.png", "/tmp/opencarapace/image-b.jpg"],
       },
     });
 
     const prompt = fs.readFileSync(promptPath, "utf-8");
+    expect(prompt).toContain("Steer update:");
     expect(prompt).toContain("Attached local file paths (temporary files):");
     expect(prompt).toContain("1. /tmp/opencarapace/voice-a.ogg");
     expect(prompt).toContain("2. /tmp/opencarapace/image-a.png");
