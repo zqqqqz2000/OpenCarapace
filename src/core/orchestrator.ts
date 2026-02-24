@@ -123,7 +123,17 @@ export class ChatOrchestrator {
       input: params.input,
     });
     if (commandResult.handled) {
-      return this.commandTurn(params.sessionId, commandResult.agentId ?? currentAgentId, commandResult.finalText);
+      const result = this.commandTurn(
+        params.sessionId,
+        commandResult.agentId ?? currentAgentId,
+        commandResult.finalText,
+      );
+      if (params.onEvent) {
+        for (const event of result.events) {
+          await params.onEvent(event);
+        }
+      }
+      return result;
     }
 
     const adapter = this.registry.require(currentAgentId);
@@ -169,6 +179,9 @@ export class ChatOrchestrator {
       events.push(event);
       await this.skills.runOnEvent(applicableSkills, request, event);
       await this.hooks.runOnEvent({ request, event });
+      if (params.onEvent) {
+        await params.onEvent(event);
+      }
     };
 
     await emit({

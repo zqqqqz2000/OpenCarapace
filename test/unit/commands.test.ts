@@ -5,6 +5,7 @@ import { SessionManager, InMemorySessionStore } from "../../src/core/session.js"
 import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
 import { CodexAgentAdapter } from "../../src/adapters/codex.js";
 import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
+import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills.js";
 
 function createService(): ConversationCommandService {
   const registry = new AgentRegistry();
@@ -19,6 +20,17 @@ function createService(): ConversationCommandService {
       instruction: "keep final concise",
       appliesTo: ["codex"],
     }),
+  );
+  skills.register(
+    new OpenClawCatalogSkill([
+      {
+        id: "deploy-checklist",
+        name: "Deploy Checklist",
+        filePath: "/tmp/deploy/SKILL.md",
+        summary: "Safe deployment with rollback and validation",
+        content: "Ensure rollback steps are prepared.",
+      },
+    ]),
   );
 
   return new ConversationCommandService({
@@ -72,5 +84,18 @@ describe("ConversationCommandService", () => {
     expect(result.handled).toBeTrue();
     expect(result.agentId).toBe("cloudcode");
     expect(result.finalText).toContain("Agent switched");
+  });
+
+  test("lists openclaw catalog by /skills catalog", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s1",
+      currentAgentId: "codex",
+      input: "/skills catalog 5",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("OpenClaw skills");
+    expect(result.finalText).toContain("Deploy Checklist");
   });
 });

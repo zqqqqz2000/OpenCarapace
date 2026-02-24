@@ -1,4 +1,5 @@
 import type { AgentRegistry } from "./agent.js";
+import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
 import { MemorySkill } from "./memory-skill.js";
 import type { SessionManager } from "./session.js";
 import type { SkillRuntime } from "./skills.js";
@@ -180,7 +181,7 @@ export class ConversationCommandService {
       case "skills": {
         return {
           handled: true,
-          finalText: this.skillsText(params.currentAgentId),
+          finalText: this.skillsText(params.currentAgentId, args),
           agentId: params.currentAgentId,
         };
       }
@@ -209,7 +210,7 @@ export class ConversationCommandService {
       "- /sessions: list recent sessions",
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/cloudcode/claude-code)",
-      "- /skills: list active skills for current agent",
+      "- /skills [catalog n]: list active skills or OpenClaw catalog skills",
       "- /memory [show|clear] [n]: inspect or clear memory entries",
       "- /forget: alias of /memory clear",
       "- /commands or /command help: show this list",
@@ -324,7 +325,13 @@ export class ConversationCommandService {
     };
   }
 
-  private skillsText(agentId: AgentId): string {
+  private skillsText(agentId: AgentId, args: string[]): string {
+    const sub = args[0]?.toLowerCase();
+    if (sub === "catalog" || sub === "market") {
+      const limit = parseNumber(args[1], 20, 1, 100);
+      return this.skillsCatalogText(limit);
+    }
+
     const skills = this.deps.skills.listApplicable(agentId);
     if (skills.length === 0) {
       return `No skills enabled for agent ${agentId}.`;
@@ -336,6 +343,27 @@ export class ConversationCommandService {
 
   private getMemorySkill(): MemorySkill | undefined {
     return this.deps.skills.listAll().find((skill): skill is MemorySkill => skill instanceof MemorySkill);
+  }
+
+  private getOpenClawSkill(): OpenClawCatalogSkill | undefined {
+    return this.deps.skills
+      .listAll()
+      .find((skill): skill is OpenClawCatalogSkill => skill instanceof OpenClawCatalogSkill);
+  }
+
+  private skillsCatalogText(limit: number): string {
+    const openClaw = this.getOpenClawSkill();
+    if (!openClaw) {
+      return "OpenClaw catalog is not enabled.";
+    }
+
+    const docs = openClaw.listDocs();
+    if (docs.length === 0) {
+      return "OpenClaw catalog is enabled but empty.";
+    }
+
+    const lines = docs.slice(0, limit).map((doc, index) => `${index + 1}. ${doc.name} - ${doc.summary}`);
+    return [`OpenClaw skills (${docs.length})`, ...lines].join("\n");
   }
 
   private memoryClearText(sessionId: string, currentAgentId: AgentId): CommandExecutionResult {

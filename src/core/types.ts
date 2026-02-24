@@ -91,6 +91,7 @@ export type ChatTurnParams = {
   sessionId: string;
   input: string;
   metadata?: Record<string, unknown>;
+  onEvent?: (event: AgentEvent) => void | Promise<void>;
 };
 
 export type ChatTurnResult = {

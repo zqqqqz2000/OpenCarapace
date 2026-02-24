@@ -1,10 +1,15 @@
 import type { SkillRuntime } from "../core/skills.js";
 import { InstructionSkill } from "../core/skills.js";
 import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill.js";
+import {
+  createOpenClawCatalogSkillFromEnv,
+  type OpenClawCatalogSkill,
+} from "../integrations/openclaw-skills.js";
 
 export type SkillPresetResult = {
   memoryBank: InMemoryMemoryBank;
   memorySkill: MemorySkill;
+  openClawSkill: OpenClawCatalogSkill | null;
 };
 
 export function registerDefaultSkills(runtime: SkillRuntime): SkillPresetResult {
@@ -67,8 +72,18 @@ export function registerDefaultSkills(runtime: SkillRuntime): SkillPresetResult 
     }),
   );
 
+  const openClawSkill = createOpenClawCatalogSkillFromEnv({
+    appliesTo: "*",
+    maxSelectedSkills: 2,
+    maxSnippetChars: 900,
+  });
+  if (openClawSkill) {
+    runtime.register(openClawSkill);
+  }
+
   return {
     memoryBank,
     memorySkill,
+    openClawSkill,
   };
 }

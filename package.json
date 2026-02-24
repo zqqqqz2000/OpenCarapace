@@ -11,6 +11,7 @@
     "test": "bun test ./test",
     "test:e2e": "bun test ./test/e2e",
     "start": "bun run src/cli/server.ts",
+    "gateway": "bun run src/cli/gateway.ts",
     "chat": "bun run src/cli/chat.ts"
   },
   "devDependencies": {

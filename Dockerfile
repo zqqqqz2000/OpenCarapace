@@ -10,4 +10,4 @@ COPY src ./src
 EXPOSE 3000
 
 ENV PORT=3000
-CMD ["bun", "run", "src/cli/server.ts"]
+CMD ["bun", "run", "src/cli/gateway.ts"]
