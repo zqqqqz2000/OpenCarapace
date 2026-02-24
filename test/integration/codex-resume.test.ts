@@ -6,7 +6,7 @@ import { createCodexCliBackend, CodexAgentAdapter } from "../../src/adapters/cod
 import { AgentRegistry } from "../../src/core/agent.js";
 import { HookBus } from "../../src/core/hooks.js";
 import { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import { InMemorySessionStore } from "../../src/core/session.js";
+import { FileSessionStore, InMemorySessionStore, type SessionStore } from "../../src/core/session.js";
 import { SkillRuntime } from "../../src/core/skills.js";
 import { ToolRuntime } from "../../src/core/tools.js";
 import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
@@ -72,7 +72,10 @@ console.log(
   fs.writeFileSync(scriptPath, script, { encoding: "utf-8", mode: 0o755 });
 }
 
-function createOrchestratorWithFakeCodex(scriptPath: string): ChatOrchestrator {
+function createOrchestratorWithFakeCodex(
+  scriptPath: string,
+  sessionStore: SessionStore = new InMemorySessionStore(),
+): ChatOrchestrator {
   const backend = createCodexCliBackend({
     command: scriptPath,
     args: ["exec", "{{prompt}}"],
@@ -89,7 +92,7 @@ function createOrchestratorWithFakeCodex(scriptPath: string): ChatOrchestrator {
     hooks: new HookBus(),
     skillRuntime: new SkillRuntime(),
     toolRuntime: new ToolRuntime(),
-    sessionStore: new InMemorySessionStore(),
+    sessionStore,
     readabilityPolicy: new ReadabilityPolicy({
       maxChars: 1000,
       maxLines: 20,
@@ -152,5 +155,42 @@ describe("Codex resume-only conversation flow", () => {
 
     const metadata = orchestrator.sessions.getMetadata("s-resume");
     expect(metadata.codex_thread_id).toBe("thread-2");
+  });
+
+  test("persists codex thread binding across orchestrator restart with file session store", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-codex-resume-file-"));
+    const scriptPath = path.join(root, "fake-codex.mjs");
+    const callLogPath = path.join(root, "calls.json");
+    const counterPath = path.join(root, "counter.txt");
+    const sessionFilePath = path.join(root, "sessions.json");
+    createFakeCodexScript({ scriptPath, callLogPath, counterPath });
+
+    const orchestratorA = createOrchestratorWithFakeCodex(
+      scriptPath,
+      new FileSessionStore({ filePath: sessionFilePath }),
+    );
+    await orchestratorA.chat({
+      sessionId: "s-persist",
+      agentId: "codex",
+      input: "first",
+    });
+
+    const orchestratorB = createOrchestratorWithFakeCodex(
+      scriptPath,
+      new FileSessionStore({ filePath: sessionFilePath }),
+    );
+    const second = await orchestratorB.chat({
+      sessionId: "s-persist",
+      input: "second",
+    });
+
+    expect(second.finalText).toContain("thread-1");
+
+    const calls = JSON.parse(fs.readFileSync(callLogPath, "utf-8")) as string[][];
+    expect(calls.length).toBe(2);
+    const secondCall = calls[1] ?? [];
+    expect(secondCall.includes("resume")).toBeTrue();
+    const resumeThread = secondCall[secondCall.indexOf("resume") + 1];
+    expect(resumeThread).toBe("thread-1");
   });
 });

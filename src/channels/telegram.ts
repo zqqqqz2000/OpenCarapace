@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -26,10 +30,26 @@ type TelegramUser = {
   username?: string;
 };
 
+type TelegramPhotoSize = {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+};
+
+type TelegramFile = {
+  file_id: string;
+  file_unique_id: string;
+  file_path?: string;
+};
+
 type TelegramMessage = {
   message_id: number;
   message_thread_id?: number;
   text?: string;
+  caption?: string;
+  photo?: TelegramPhotoSize[];
   chat: TelegramChat;
   from?: TelegramUser;
   reply_to_message?: {
@@ -75,6 +95,41 @@ function normalizeOptionalString(value: number | string | undefined): string | u
   return String(value);
 }
 
+function resolveInboundText(message: TelegramMessage): string {
+  const text = message.text?.trim();
+  if (text) {
+    return text;
+  }
+
+  const caption = message.caption?.trim();
+  if (caption) {
+    return caption;
+  }
+
+  if (message.photo?.length) {
+    return "请基于附带图片进行处理。";
+  }
+
+  return "";
+}
+
+function pickLargestPhoto(photos: TelegramPhotoSize[]): TelegramPhotoSize | undefined {
+  if (photos.length === 0) {
+    return undefined;
+  }
+
+  let best: TelegramPhotoSize | undefined = undefined;
+  let bestScore = -1;
+  for (const photo of photos) {
+    const score = photo.file_size ?? photo.width * photo.height;
+    if (score > bestScore) {
+      best = photo;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 export class TelegramChannelAdapter implements ChannelAdapter {
   readonly id = "telegram" as const;
   readonly displayName = "Telegram";
@@ -97,7 +152,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   constructor(options: TelegramChannelAdapterOptions) {
     this.token = options.token.trim();
-    this.apiBaseUrl = options.apiBaseUrl ?? "https://api.telegram.org";
+    this.apiBaseUrl = (options.apiBaseUrl ?? "https://api.telegram.org").replace(/\/+$/, "");
     this.pollTimeoutSeconds = Math.max(1, options.pollTimeoutSeconds ?? 25);
     this.retryDelayMs = Math.max(200, options.retryDelayMs ?? 1200);
     const allow = (options.allowedChatIds ?? []).map((entry) => entry.trim()).filter(Boolean);
@@ -187,9 +242,6 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           if (!message) {
             continue;
           }
-          if (!message.text?.trim()) {
-            continue;
-          }
           if (message.from?.is_bot) {
             continue;
           }
@@ -199,10 +251,23 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             continue;
           }
 
+          const text = resolveInboundText(message);
+          let imagePaths: string[] = [];
+          let imageDownloadError = "";
+          try {
+            imagePaths = await this.downloadImagePaths(message, signal);
+          } catch (error) {
+            imageDownloadError = error instanceof Error ? error.message : String(error);
+          }
+
+          if (!text) {
+            continue;
+          }
+
           const inbound: ChannelInboundMessage = {
             channelId: this.id,
             chatId,
-            text: message.text.trim(),
+            text,
             raw: update,
           };
           const senderId = normalizeOptionalString(message.from?.id);
@@ -225,6 +290,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           if (replyToMessageId) {
             inbound.replyToMessageId = replyToMessageId;
           }
+          if (imagePaths.length > 0) {
+            inbound.imagePaths = imagePaths;
+            inbound.metadata = {
+              telegram_image_count: imagePaths.length,
+            };
+          } else if (imageDownloadError) {
+            inbound.metadata = {
+              telegram_image_download_error: imageDownloadError,
+            };
+          }
           await handler(inbound);
         }
       } catch (error) {
@@ -245,6 +320,49 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     };
     const response = await this.callApi<TelegramUpdate[]>("getUpdates", payload, signal);
     return response;
+  }
+
+  private async downloadImagePaths(
+    message: TelegramMessage,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    if (!message.photo?.length) {
+      return [];
+    }
+    const selected = pickLargestPhoto(message.photo);
+    const fileId = selected?.file_id?.trim();
+    if (!fileId) {
+      return [];
+    }
+    const file = await this.callApi<TelegramFile>("getFile", { file_id: fileId }, signal);
+    const remotePath = file.file_path?.trim();
+    if (!remotePath) {
+      return [];
+    }
+    const localPath = await this.downloadTelegramFile(remotePath, signal);
+    return [localPath];
+  }
+
+  private async downloadTelegramFile(remotePath: string, signal: AbortSignal): Promise<string> {
+    const normalized = remotePath.replace(/^\/+/, "");
+    const url = `${this.apiBaseUrl}/file/bot${this.token}/${normalized}`;
+    const response = await fetch(url, {
+      method: "GET",
+      signal: signal ?? null,
+    });
+
+    if (!response.ok) {
+      throw new Error(`telegram file download failed: status=${response.status}`);
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const ext = path.extname(normalized).trim();
+    const safeExt = ext && ext.length <= 10 ? ext : ".jpg";
+    const root = path.join(os.tmpdir(), "opencarapace", "telegram-media");
+    await mkdir(root, { recursive: true });
+    const localPath = path.join(root, `${Date.now()}-${randomUUID()}${safeExt}`);
+    await writeFile(localPath, bytes);
+    return localPath;
   }
 
   private async callApi<T>(

@@ -10,6 +10,7 @@ export type OpenCarapaceConfig = {
   runtime?: {
     default_agent_id?: string;
     workspace_root?: string;
+    session_store_file?: string;
     port?: number;
     gateway_port?: number;
   };

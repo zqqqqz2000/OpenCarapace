@@ -72,6 +72,33 @@ function resolveThinkingDepth(sessionMetadata: Record<string, unknown>): Thinkin
   return undefined;
 }
 
+function collectStringValues(value: unknown, output: string[]): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const normalized = item.trim();
+    if (!normalized) {
+      continue;
+    }
+    output.push(normalized);
+  }
+}
+
+function resolveImagePaths(metadata: BackendRunRequest["metadata"]): string[] {
+  if (!isRecord(metadata)) {
+    return [];
+  }
+  const imagePaths: string[] = [];
+  collectStringValues(metadata.imagePaths, imagePaths);
+  collectStringValues(metadata.image_paths, imagePaths);
+  collectStringValues(metadata.localImagePaths, imagePaths);
+  return [...new Set(imagePaths)];
+}
+
 function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): string {
   const sections: string[] = [];
 
@@ -89,6 +116,18 @@ function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): strin
 
   if (depth) {
     sections.push(`Thinking depth preference: ${depth}. Keep user-visible output concise and actionable.`);
+  }
+
+  const imagePaths = resolveImagePaths(request.metadata);
+  if (imagePaths.length > 0) {
+    const lines = imagePaths.map((entry, index) => `${index + 1}. ${entry}`);
+    sections.push(
+      [
+        "Attached local image paths (temporary files):",
+        ...lines,
+        "If the request involves images, inspect these files before responding.",
+      ].join("\n"),
+    );
   }
 
   sections.push(["User request:", request.prompt].join("\n"));

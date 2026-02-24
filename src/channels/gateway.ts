@@ -294,6 +294,7 @@ export class ChannelGateway {
           threadId: message.threadId,
           messageId: message.messageId,
           replyToMessageId: message.replyToMessageId,
+          imagePaths: message.imagePaths,
           rawInbound: message.raw,
           ...(message.metadata ?? {}),
         },

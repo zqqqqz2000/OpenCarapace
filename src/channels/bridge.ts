@@ -18,6 +18,7 @@ export type BridgeInboundPayload = {
   threadId?: string;
   replyToMessageId?: string;
   text?: string;
+  imagePaths?: string[];
   metadata?: Record<string, unknown>;
   raw?: unknown;
 };
@@ -137,6 +138,9 @@ export class BridgeChannelAdapter implements ChannelAdapter {
     }
     if (payload.replyToMessageId) {
       inbound.replyToMessageId = payload.replyToMessageId;
+    }
+    if (payload.imagePaths?.length) {
+      inbound.imagePaths = payload.imagePaths.filter((item) => typeof item === "string" && item.trim().length > 0);
     }
     if (payload.metadata) {
       inbound.metadata = payload.metadata;

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { AgentId, ChatMessage } from "./types.js";
 
 export type SessionRecord = {
@@ -37,6 +39,168 @@ export class InMemorySessionStore implements SessionStore {
 
   dump(): SessionRecord[] {
     return this.list();
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toChatMessage(input: unknown): ChatMessage | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const role = typeof input.role === "string" ? input.role.trim() : "";
+  const content = typeof input.content === "string" ? input.content : "";
+  const createdAt = Number(input.createdAt);
+  if (!role || !content.trim() || !Number.isFinite(createdAt)) {
+    return null;
+  }
+  const message: ChatMessage = {
+    role: role as ChatMessage["role"],
+    content,
+    createdAt: Math.floor(createdAt),
+  };
+  if (isRecord(input.metadata)) {
+    message.metadata = { ...input.metadata };
+  }
+  return message;
+}
+
+function toSessionRecord(input: unknown): SessionRecord | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const id = typeof input.id === "string" ? input.id.trim() : "";
+  const agentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
+  const createdAt = Number(input.createdAt);
+  const updatedAt = Number(input.updatedAt);
+  const rawMessages = Array.isArray(input.messages) ? input.messages : [];
+  if (!id || !agentId || !Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) {
+    return null;
+  }
+  const messages = rawMessages
+    .map((message) => toChatMessage(message))
+    .filter((message): message is ChatMessage => Boolean(message));
+  return {
+    id,
+    agentId: agentId as AgentId,
+    createdAt: Math.floor(createdAt),
+    updatedAt: Math.floor(updatedAt),
+    messages,
+    metadata: isRecord(input.metadata) ? { ...input.metadata } : {},
+  };
+}
+
+export type FileSessionStoreOptions = {
+  filePath: string;
+  maxSessions?: number;
+  autoFlush?: boolean;
+};
+
+export class FileSessionStore implements SessionStore {
+  private readonly filePath: string;
+  private readonly maxSessions: number;
+  private readonly autoFlush: boolean;
+  private readonly records = new Map<string, SessionRecord>();
+
+  constructor(options: FileSessionStoreOptions) {
+    this.filePath = path.resolve(options.filePath);
+    this.maxSessions = Math.max(1, Math.floor(options.maxSessions ?? 500));
+    this.autoFlush = options.autoFlush ?? true;
+    this.load();
+  }
+
+  get(sessionId: string): SessionRecord | undefined {
+    return this.records.get(sessionId);
+  }
+
+  save(record: SessionRecord): void {
+    this.records.set(record.id, {
+      ...record,
+      messages: [...record.messages],
+      metadata: { ...(record.metadata ?? {}) },
+    });
+    this.prune();
+    if (this.autoFlush) {
+      this.flush();
+    }
+  }
+
+  delete(sessionId: string): void {
+    this.records.delete(sessionId);
+    if (this.autoFlush) {
+      this.flush();
+    }
+  }
+
+  list(): SessionRecord[] {
+    return [...this.records.values()].map((record) => ({
+      ...record,
+      messages: [...record.messages],
+      metadata: { ...(record.metadata ?? {}) },
+    }));
+  }
+
+  flush(): void {
+    const directory = path.dirname(this.filePath);
+    fs.mkdirSync(directory, { recursive: true });
+    const payload = JSON.stringify(
+      {
+        version: 1,
+        sessions: this.list(),
+      },
+      null,
+      2,
+    );
+    const tempFilePath = `${this.filePath}.tmp`;
+    fs.writeFileSync(tempFilePath, payload, "utf-8");
+    fs.renameSync(tempFilePath, this.filePath);
+  }
+
+  private load(): void {
+    if (!fs.existsSync(this.filePath)) {
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
+    } catch {
+      return;
+    }
+
+    const rawSessions = (() => {
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+      if (isRecord(parsed) && Array.isArray(parsed.sessions)) {
+        return parsed.sessions;
+      }
+      return [];
+    })();
+
+    for (const entry of rawSessions) {
+      const record = toSessionRecord(entry);
+      if (!record) {
+        continue;
+      }
+      this.records.set(record.id, record);
+    }
+    this.prune();
+  }
+
+  private prune(): void {
+    if (this.records.size <= this.maxSessions) {
+      return;
+    }
+    const sorted = [...this.records.values()].sort(
+      (left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id),
+    );
+    this.records.clear();
+    for (const record of sorted.slice(0, this.maxSessions)) {
+      this.records.set(record.id, record);
+    }
   }
 }
 

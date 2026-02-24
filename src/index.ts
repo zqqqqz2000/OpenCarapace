@@ -13,7 +13,7 @@ import {
 import { AgentRegistry } from "./core/agent.js";
 import { HookBus } from "./core/hooks.js";
 import { ChatOrchestrator } from "./core/orchestrator.js";
-import { InMemorySessionStore } from "./core/session.js";
+import { FileSessionStore } from "./core/session.js";
 import { SkillRuntime } from "./core/skills.js";
 import { ToolRuntime } from "./core/tools.js";
 import { ReadabilityPolicy } from "./core/ux-policy.js";
@@ -66,13 +66,32 @@ function isEnabled(value: boolean | undefined, fallback = true): boolean {
   return value === undefined ? fallback : value;
 }
 
+function resolvePathFromConfig(params: {
+  rawPath: string | undefined;
+  configPath: string;
+  fallbackFileName: string;
+}): string {
+  const baseDir = path.dirname(params.configPath);
+  const raw = params.rawPath?.trim();
+  if (raw) {
+    return path.isAbsolute(raw) ? raw : path.resolve(baseDir, raw);
+  }
+  return path.resolve(baseDir, params.fallbackFileName);
+}
+
 export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): ChatOrchestrator {
   const { config, configPath } = resolveRuntimeConfig(options);
   const registry = new AgentRegistry();
   const hooks = new HookBus();
   const skills = new SkillRuntime();
   const tools = new ToolRuntime();
-  const sessions = new InMemorySessionStore();
+  const sessions = new FileSessionStore({
+    filePath: resolvePathFromConfig({
+      rawPath: config.runtime?.session_store_file,
+      configPath,
+      fallbackFileName: "sessions.json",
+    }),
+  });
   const workspaceRootRaw = config.runtime?.workspace_root?.trim();
   const workspaceRoot = workspaceRootRaw
     ? path.isAbsolute(workspaceRootRaw)

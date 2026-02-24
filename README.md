@@ -90,6 +90,7 @@ bun run opencarapace config init
 ```toml
 [runtime]
 default_agent_id = "codex"
+session_store_file = "sessions.json"
 port = 3000
 gateway_port = 3010
 
@@ -135,6 +136,9 @@ openclaw_root = "/Users/zzzz/Documents/openclaw"
 
 - `cloudcode` 和 `claude-code` 不再提供 mock 输出
 - 如果把它们 `enabled=true`，必须配置对应 `cli_command`（否则启动时报错）
+- 会话（含 `codex_thread_id`、history、model/depth 偏好）默认持久化到 `sessions.json`
+  - 默认相对 `config.toml` 所在目录
+  - 可通过 `runtime.session_store_file` 指定绝对或相对路径
 
 ## Channel Gateway（无 UI）
 

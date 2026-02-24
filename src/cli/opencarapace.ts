@@ -151,6 +151,7 @@ async function promptNumberInput(
 
 function renderCurrentSummary(config: OpenCarapaceConfig): string {
   const defaultAgent = config.runtime?.default_agent_id ?? "codex";
+  const sessionStoreFile = config.runtime?.session_store_file ?? "sessions.json";
   const codex = config.agents?.codex;
   const cloudcode = config.agents?.cloudcode;
   const claude = config.agents?.claude_code;
@@ -163,6 +164,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
   return [
     "Current config summary",
     `- default agent: ${defaultAgent}`,
+    `- session store: ${sessionStoreFile}`,
     `- agents: codex=${codex?.enabled ?? true}, cloudcode=${cloudcode?.enabled ?? false}, claude-code=${claude?.enabled ?? false}`,
     `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}, wechat=${wechat?.enabled ?? false}`,
     `- openclaw catalog: ${skills?.enable_openclaw_catalog ?? true}`,
@@ -240,6 +242,12 @@ async function configureRuntimeAndAgents(
     workspaceRootCurrent,
     "/path/to/workspace",
   );
+  const sessionStoreFileCurrent = config.runtime?.session_store_file ?? "sessions.json";
+  const sessionStoreFile = await promptNormalizedInput(
+    'Session store file ("-" to clear, default sessions.json)',
+    sessionStoreFileCurrent,
+    "sessions.json",
+  );
 
   config.runtime = {
     ...(config.runtime ?? {}),
@@ -247,6 +255,7 @@ async function configureRuntimeAndAgents(
     port,
     gateway_port: gatewayPort,
     workspace_root: workspaceRoot || "",
+    session_store_file: sessionStoreFile || "",
   };
 
   await configureAgentBlock({

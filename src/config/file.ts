@@ -83,6 +83,7 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
   return {
     runtime: {
       default_agent_id: "codex",
+      session_store_file: "sessions.json",
       port: 3000,
       gateway_port: 3010,
     },
