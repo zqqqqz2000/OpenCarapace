@@ -1,18 +1,45 @@
 import { describe, expect, test } from "bun:test";
 import { createDefaultOrchestrator } from "../../src/index.js";
 import type { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import { createCodexCliBackendFromEnv } from "../../src/adapters/codex.js";
+import type { OpenCarapaceConfig } from "../../src/config/types.js";
 
 describe("E2E real codex (optional)", () => {
   const TEST_TIMEOUT_MS = 120_000;
   const runner = process.env.E2E_REAL_CODEX === "1" ? test : test.skip;
 
   function createRealCodexOrchestrator(): ChatOrchestrator {
-    const backend = createCodexCliBackendFromEnv();
-    if (!backend) {
+    const command = process.env.CODEX_CLI_COMMAND?.trim();
+    if (!command) {
       throw new Error("E2E_REAL_CODEX=1 but CODEX_CLI_COMMAND is missing");
     }
-    return createDefaultOrchestrator();
+    const args = (process.env.CODEX_CLI_ARGS ?? "exec {{prompt}}")
+      .split(" ")
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    const config: OpenCarapaceConfig = {
+      runtime: {
+        default_agent_id: "codex",
+      },
+      agents: {
+        codex: {
+          enabled: true,
+          cli_command: command,
+          cli_args: args,
+        },
+        cloudcode: {
+          enabled: false,
+        },
+        claude_code: {
+          enabled: false,
+        },
+      },
+      skills: {
+        enable_openclaw_catalog: false,
+      },
+    };
+
+    return createDefaultOrchestrator({ config });
   }
 
   runner(

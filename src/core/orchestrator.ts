@@ -4,6 +4,7 @@ import { ConversationCommandService } from "./commands.js";
 import { HookBus } from "./hooks.js";
 import type { Skill } from "./skills.js";
 import { SkillRuntime } from "./skills.js";
+import { ToolRuntime } from "./tools.js";
 import type { SessionStore } from "./session.js";
 import { InMemorySessionStore, SessionManager } from "./session.js";
 import {
@@ -39,6 +40,7 @@ function assistantMessage(content: string): ChatMessage {
 export type ChatOrchestratorDeps = {
   registry?: AgentRegistry;
   skillRuntime?: SkillRuntime;
+  toolRuntime?: ToolRuntime;
   hooks?: HookBus;
   sessionStore?: SessionStore;
   readabilityPolicy?: ReadabilityPolicy;
@@ -50,6 +52,7 @@ export class ChatOrchestrator {
   readonly registry: AgentRegistry;
   readonly skills: SkillRuntime;
   readonly hooks: HookBus;
+  readonly tools: ToolRuntime;
   readonly sessions: SessionManager;
   readonly readability: ReadabilityPolicy;
   readonly commands: ConversationCommandService;
@@ -60,6 +63,7 @@ export class ChatOrchestrator {
   constructor(deps: ChatOrchestratorDeps = {}) {
     this.registry = deps.registry ?? new AgentRegistry();
     this.skills = deps.skillRuntime ?? new SkillRuntime();
+    this.tools = deps.toolRuntime ?? new ToolRuntime();
     this.hooks = deps.hooks ?? new HookBus();
     this.sessions = new SessionManager(deps.sessionStore ?? new InMemorySessionStore());
     this.readability = deps.readabilityPolicy ?? new ReadabilityPolicy();
@@ -70,6 +74,7 @@ export class ChatOrchestrator {
         registry: this.registry,
         sessions: this.sessions,
         skills: this.skills,
+        tools: this.tools,
       });
   }
 

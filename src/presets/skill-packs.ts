@@ -1,8 +1,10 @@
+import path from "node:path";
 import type { SkillRuntime } from "../core/skills.js";
 import { InstructionSkill } from "../core/skills.js";
 import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill.js";
+import type { OpenCarapaceConfig } from "../config/types.js";
 import {
-  createOpenClawCatalogSkillFromEnv,
+  createOpenClawCatalogSkill,
   type OpenClawCatalogSkill,
 } from "../integrations/openclaw-skills.js";
 
@@ -12,7 +14,29 @@ export type SkillPresetResult = {
   openClawSkill: OpenClawCatalogSkill | null;
 };
 
-export function registerDefaultSkills(runtime: SkillRuntime): SkillPresetResult {
+function resolveOpenClawRoots(config?: OpenCarapaceConfig): string[] | undefined {
+  const roots = [] as string[];
+  const openclawRoot = config?.skills?.openclaw_root?.trim();
+  if (openclawRoot) {
+    roots.push(path.resolve(openclawRoot, "skills"));
+  }
+  const extra = config?.skills?.openclaw_skill_dirs ?? [];
+  for (const item of extra) {
+    const normalized = item?.trim();
+    if (!normalized) {
+      continue;
+    }
+    roots.push(path.resolve(normalized));
+  }
+  return roots.length > 0 ? roots : undefined;
+}
+
+export function registerDefaultSkills(
+  runtime: SkillRuntime,
+  options?: {
+    config?: OpenCarapaceConfig;
+  },
+): SkillPresetResult {
   const memoryBank = new InMemoryMemoryBank();
   const memorySkill = new MemorySkill(memoryBank, { appliesTo: "*" });
   runtime.register(memorySkill);
@@ -72,11 +96,32 @@ export function registerDefaultSkills(runtime: SkillRuntime): SkillPresetResult 
     }),
   );
 
-  const openClawSkill = createOpenClawCatalogSkillFromEnv({
-    appliesTo: "*",
-    maxSelectedSkills: 2,
-    maxSnippetChars: 900,
-  });
+  const openClawEnabled = options?.config?.skills?.enable_openclaw_catalog ?? true;
+  const openClawParams = {
+    appliesTo: "*" as const,
+    allowEnvDefaults: options?.config ? false : true,
+    maxSelectedSkills: Math.max(
+      1,
+      options?.config?.skills?.openclaw_max_selected_skills ?? 2,
+    ),
+    maxSnippetChars: Math.max(
+      240,
+      options?.config?.skills?.openclaw_max_snippet_chars ?? 900,
+    ),
+  } as {
+    appliesTo: "*";
+    roots?: string[];
+    allowEnvDefaults?: boolean;
+    maxSelectedSkills: number;
+    maxSnippetChars: number;
+  };
+  const roots = resolveOpenClawRoots(options?.config);
+  if (roots) {
+    openClawParams.roots = roots;
+  }
+  const openClawSkill = openClawEnabled
+    ? createOpenClawCatalogSkill(openClawParams)
+    : null;
   if (openClawSkill) {
     runtime.register(openClawSkill);
   }

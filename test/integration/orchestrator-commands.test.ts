@@ -38,7 +38,7 @@ describe("ChatOrchestrator commands", () => {
       input: "请给我一句执行状态。",
     });
     expect(turn.agentId).toBe("cloudcode");
-    expect(turn.finalText).toContain("CloudCode adapter is wired");
+    expect(turn.finalText).toContain("CloudCode deterministic test backend response.");
 
     const session = orchestrator.sessions.snapshot("cmd-agent-1");
     expect(session?.agentId).toBe("cloudcode");
@@ -71,5 +71,23 @@ describe("ChatOrchestrator commands", () => {
       input: "/memory show 1",
     });
     expect(empty.finalText).toContain("Memory is empty");
+  });
+
+  test("supports /tools and /grep commands", async () => {
+    const orchestrator = createDeterministicOrchestrator();
+
+    const tools = await orchestrator.chat({
+      sessionId: "cmd-tools-1",
+      input: "/tools",
+    });
+    expect(tools.finalText).toContain("Tools");
+    expect(tools.finalText).toContain("grep");
+
+    const grep = await orchestrator.chat({
+      sessionId: "cmd-tools-1",
+      input: "/grep open-carapace --path package.json --limit 2",
+    });
+    expect(grep.finalText).toContain("Grep matches");
+    expect(grep.finalText).toContain("package.json");
   });
 });

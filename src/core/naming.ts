@@ -1,4 +1,4 @@
-export type InjectableKind = "skill" | "hook";
+export type InjectableKind = "skill" | "hook" | "tool";
 
 const SEGMENT_RE = /^[a-z][a-z0-9-]*$/;
 const MIN_SEGMENTS = 3;

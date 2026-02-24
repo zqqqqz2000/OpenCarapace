@@ -1,11 +1,17 @@
+import os from "node:os";
+import path from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { ConversationCommandService, parseSlashCommand } from "../../src/core/commands.js";
 import { AgentRegistry } from "../../src/core/agent.js";
 import { SessionManager, InMemorySessionStore } from "../../src/core/session.js";
 import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
+import { ToolRuntime } from "../../src/core/tools.js";
 import { CodexAgentAdapter } from "../../src/adapters/codex.js";
 import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
 import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills.js";
+import { createGrepWorkspaceTool } from "../../src/tools/grep-tool.js";
+import { createSkillLookupTool } from "../../src/tools/skill-tool.js";
 
 function createService(): ConversationCommandService {
   const registry = new AgentRegistry();
@@ -33,10 +39,31 @@ function createService(): ConversationCommandService {
     ]),
   );
 
+  const tools = new ToolRuntime();
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "open-carapace-cmd-test-"));
+  const sourceFile = path.join(tmpDir, "sample.txt");
+  writeFileSync(sourceFile, "deploy-safe-token\nroll back plan\n", "utf-8");
+  tools.register(
+    createGrepWorkspaceTool({
+      defaultRootDir: tmpDir,
+    }),
+  );
+  tools.register(
+    createSkillLookupTool({
+      docsProvider: () => {
+        const openclaw = skills
+          .listAll()
+          .find((skill): skill is OpenClawCatalogSkill => skill instanceof OpenClawCatalogSkill);
+        return openclaw?.listDocs() ?? [];
+      },
+    }),
+  );
+
   return new ConversationCommandService({
     registry,
     sessions: new SessionManager(new InMemorySessionStore()),
     skills,
+    tools,
   });
 }
 
@@ -96,6 +123,32 @@ describe("ConversationCommandService", () => {
 
     expect(result.handled).toBeTrue();
     expect(result.finalText).toContain("OpenClaw skills");
+    expect(result.finalText).toContain("Deploy Checklist");
+  });
+
+  test("runs grep tool by /grep command", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s1",
+      currentAgentId: "codex",
+      input: "/grep deploy-safe-token --path sample.txt --limit 3",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Grep matches");
+    expect(result.finalText).toContain("deploy-safe-token");
+  });
+
+  test("runs skill lookup by /skill command", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s1",
+      currentAgentId: "codex",
+      input: "/skill deploy rollback",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Skill matches");
     expect(result.finalText).toContain("Deploy Checklist");
   });
 });

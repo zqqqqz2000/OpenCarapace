@@ -6,8 +6,8 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 COPY src ./src
+RUN bun run src/cli/opencarapace.ts config init
 
-EXPOSE 3000
+EXPOSE 3010
 
-ENV PORT=3000
-CMD ["bun", "run", "src/cli/gateway.ts"]
+CMD ["bun", "run", "src/cli/opencarapace.ts", "gateway"]

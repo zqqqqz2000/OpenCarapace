@@ -1,5 +1,5 @@
 import { BaseCodeAgentAdapter } from "./base.js";
-import { HookAgentBackend, type AgentBackend } from "./backend.js";
+import { CliAgentBackend, HookAgentBackend, type AgentBackend } from "./backend.js";
 import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
 
 export class ClaudeCodeAgentAdapter extends BaseCodeAgentAdapter {
@@ -10,9 +10,9 @@ export class ClaudeCodeAgentAdapter extends BaseCodeAgentAdapter {
       backend:
         backend ??
         new HookAgentBackend(async () => {
-          return {
-            finalText: "Claude Code adapter is wired. Connect a real backend via SDK/CLI/Hook.",
-          };
+          throw new Error(
+            "Claude Code backend is not configured. Set agents.claude_code.cli_command in config.toml.",
+          );
         }),
       capabilities: {
         transports: ["sdk", "cli", "hook"],
@@ -37,4 +37,22 @@ export class ClaudeCodeAgentAdapter extends BaseCodeAgentAdapter {
       at: Date.now(),
     });
   }
+}
+
+export function createClaudeCodeCliBackend(params?: {
+  command?: string;
+  args?: string[];
+}): AgentBackend | null {
+  const command = params?.command?.trim();
+  if (!command) {
+    return null;
+  }
+
+  const args = (params?.args ?? []).map((part) => part.trim()).filter(Boolean);
+  return new CliAgentBackend({
+    command,
+    args,
+    promptMode: "arg",
+    promptArgToken: "{{prompt}}",
+  });
 }

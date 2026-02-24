@@ -3,6 +3,7 @@ import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
 import { MemorySkill } from "./memory-skill.js";
 import type { SessionManager } from "./session.js";
 import type { SkillRuntime } from "./skills.js";
+import type { ToolRuntime } from "./tools.js";
 import type { AgentId } from "./types.js";
 
 export type ParsedSlashCommand = {
@@ -92,6 +93,7 @@ export type ConversationCommandServiceDeps = {
   registry: AgentRegistry;
   sessions: SessionManager;
   skills: SkillRuntime;
+  tools?: ToolRuntime;
 };
 
 export class ConversationCommandService {
@@ -185,6 +187,22 @@ export class ConversationCommandService {
           agentId: params.currentAgentId,
         };
       }
+      case "tools": {
+        return {
+          handled: true,
+          finalText: this.toolsText(),
+          agentId: params.currentAgentId,
+        };
+      }
+      case "tool": {
+        return this.runToolCommand(params, args[0], args.slice(1));
+      }
+      case "grep": {
+        return this.runToolCommand(params, "grep", args);
+      }
+      case "skill": {
+        return this.runToolCommand(params, "skill", args);
+      }
       case "memory": {
         return this.memoryText(params.sessionId, params.currentAgentId, args);
       }
@@ -211,6 +229,10 @@ export class ConversationCommandService {
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/cloudcode/claude-code)",
       "- /skills [catalog n]: list active skills or OpenClaw catalog skills",
+      "- /tools: list enabled lightweight tools",
+      "- /tool <name> [...args]: run tool by name (grep/skill)",
+      '- /grep "<pattern>" [--path <dir-or-file>] [--limit <n>]: workspace text search',
+      "- /skill [keywords|show <id>]: search/list OpenClaw skills",
       "- /memory [show|clear] [n]: inspect or clear memory entries",
       "- /forget: alias of /memory clear",
       "- /commands or /command help: show this list",
@@ -349,6 +371,73 @@ export class ConversationCommandService {
     return this.deps.skills
       .listAll()
       .find((skill): skill is OpenClawCatalogSkill => skill instanceof OpenClawCatalogSkill);
+  }
+
+  private toolsText(): string {
+    if (!this.deps.tools) {
+      return "Tool runtime is not enabled.";
+    }
+    const tools = this.deps.tools.list();
+    if (tools.length === 0) {
+      return "No tools enabled.";
+    }
+    const lines = tools.map((tool, index) => {
+      const aliasText =
+        tool.aliases && tool.aliases.length > 0 ? `${tool.name} (${tool.aliases.join(", ")})` : tool.name;
+      return `${index + 1}. ${aliasText} - ${tool.description}`;
+    });
+    return [`Tools (${tools.length})`, ...lines, "Hint: /tool <name> [...args]"].join("\n");
+  }
+
+  private runToolCommand(
+    params: CommandExecutionParams,
+    nameRaw: string | undefined,
+    args: string[],
+  ): CommandExecutionResult {
+    const name = nameRaw?.trim().toLowerCase();
+    if (!name) {
+      return {
+        handled: true,
+        finalText: [`Usage: /tool <name> [...args]`, this.toolsText()].join("\n\n"),
+        agentId: params.currentAgentId,
+      };
+    }
+
+    if (!this.deps.tools) {
+      return {
+        handled: true,
+        finalText: "Tool runtime is not enabled.",
+        agentId: params.currentAgentId,
+      };
+    }
+
+    if (name === "list") {
+      return {
+        handled: true,
+        finalText: this.toolsText(),
+        agentId: params.currentAgentId,
+      };
+    }
+
+    const result = this.deps.tools.run(name, {
+      sessionId: params.sessionId,
+      currentAgentId: params.currentAgentId,
+      input: params.input,
+      args,
+      cwd: process.cwd(),
+    });
+    if (!result) {
+      return {
+        handled: true,
+        finalText: [`Unknown tool: ${name}`, this.toolsText()].join("\n\n"),
+        agentId: params.currentAgentId,
+      };
+    }
+    return {
+      handled: true,
+      finalText: result.text.trim() || "Tool executed with empty output.",
+      agentId: params.currentAgentId,
+    };
   }
 
   private skillsCatalogText(limit: number): string {

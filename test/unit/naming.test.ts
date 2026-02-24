@@ -18,4 +18,8 @@ describe("injectable naming", () => {
   test("throws with format hint for invalid id", () => {
     expect(() => assertInjectableId("skill", "bad")).toThrow(/vendor\.scope\.capability/i);
   });
+
+  test("supports tool kind validation", () => {
+    expect(() => assertInjectableId("tool", "openclaw.grep.workspace")).not.toThrow();
+  });
 });

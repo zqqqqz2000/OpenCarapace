@@ -1,4 +1,5 @@
 import { BridgeChannelAdapter, type BridgeInboundPayload } from "../channels/bridge.js";
+import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index.js";
 import { createDefaultChannelGateway } from "../index.js";
 
 function json(data: unknown, status = 200): Response {
@@ -25,24 +26,26 @@ function extractBridgeSecret(request: Request): string | undefined {
   return undefined;
 }
 
-async function main(): Promise<void> {
+export async function runGateway(options?: { configPath?: string }): Promise<void> {
   if (typeof Bun === "undefined") {
     throw new Error("Gateway must run with Bun runtime.");
   }
 
-  const gateway = createDefaultChannelGateway();
+  const configPath = resolveOpenCarapaceConfigPath(options?.configPath);
+  const config = loadOpenCarapaceConfig({ path: configPath });
+  const gateway = createDefaultChannelGateway({ config, configPath });
   const registry = gateway.registry;
 
   const channels = registry.list();
   if (channels.length === 0) {
     throw new Error(
-      "No channel adapters configured. Set TELEGRAM_BOT_TOKEN and/or *_BRIDGE_ENABLED=1 env vars.",
+      "No channel adapters configured. Please enable channels in ~/.config/opencarapace/config.toml.",
     );
   }
 
   await gateway.start();
 
-  const port = Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 3010);
+  const port = Math.max(1, config.runtime?.gateway_port ?? 3010);
   const server = Bun.serve({
     port,
     async fetch(request: Request): Promise<Response> {
@@ -94,4 +97,6 @@ async function main(): Promise<void> {
   console.log(`active channels: ${channels.map((channel) => channel.id).join(", ")}`);
 }
 
-void main();
+if (import.meta.main) {
+  void runGateway();
+}

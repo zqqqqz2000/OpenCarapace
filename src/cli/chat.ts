@@ -1,3 +1,4 @@
+import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index.js";
 import { createDefaultOrchestrator } from "../index.js";
 
 function usage(): string {
@@ -59,15 +60,27 @@ function parseArgs(argv: string[]): { sessionId: string; input: string; agentId?
   return parsed;
 }
 
-async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
+export async function runChatCli(
+  argv: string[] = process.argv.slice(2),
+  options?: { configPath?: string },
+): Promise<void> {
+  const parsed = parseArgs(argv);
   if (!parsed) {
     console.error(usage());
     process.exitCode = 1;
     return;
   }
 
-  const orchestrator = createDefaultOrchestrator();
+  const orchestrator = (() => {
+    if (!options?.configPath) {
+      return createDefaultOrchestrator();
+    }
+    const configPath = resolveOpenCarapaceConfigPath(options.configPath);
+    return createDefaultOrchestrator({
+      configPath,
+      config: loadOpenCarapaceConfig({ path: configPath }),
+    });
+  })();
   const request = {
     sessionId: parsed.sessionId,
     input: parsed.input,
@@ -94,4 +107,6 @@ async function main(): Promise<void> {
   console.log(result.finalText);
 }
 
-void main();
+if (import.meta.main) {
+  void runChatCli();
+}

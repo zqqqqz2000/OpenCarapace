@@ -152,19 +152,6 @@ function findSkillFilesInRoot(rootDir: string): string[] {
 
 function resolveDefaultOpenClawSkillRoots(): string[] {
   const roots = new Set<string>();
-  const explicit = (process.env.OPENCARAPACE_OPENCLAW_SKILL_DIRS ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  for (const root of explicit) {
-    roots.add(path.resolve(root));
-  }
-
-  const openClawRoot = process.env.OPENCARAPACE_OPENCLAW_ROOT?.trim();
-  if (openClawRoot) {
-    roots.add(path.resolve(openClawRoot, "skills"));
-  }
-
   const sibling = path.resolve(process.cwd(), "../openclaw/skills");
   if (fs.existsSync(sibling)) {
     roots.add(sibling);
@@ -176,8 +163,14 @@ function resolveDefaultOpenClawSkillRoots(): string[] {
 export function loadOpenClawSkillDocs(params?: {
   roots?: string[];
   maxDocs?: number;
+  allowEnvDefaults?: boolean;
 }): OpenClawSkillDoc[] {
-  const roots = params?.roots && params.roots.length > 0 ? params.roots : resolveDefaultOpenClawSkillRoots();
+  const roots =
+    params?.roots && params.roots.length > 0
+      ? params.roots
+      : params?.allowEnvDefaults === false
+        ? []
+        : resolveDefaultOpenClawSkillRoots();
   const maxDocs = Math.max(1, params?.maxDocs ?? DEFAULT_MAX_DOCS);
   const docs: OpenClawSkillDoc[] = [];
   const seen = new Set<string>();
@@ -319,13 +312,26 @@ export class OpenClawCatalogSkill implements Skill {
 }
 
 export function createOpenClawCatalogSkillFromEnv(
-  options?: OpenClawCatalogSkillOptions & { roots?: string[] },
+  options?: OpenClawCatalogSkillOptions & { roots?: string[]; allowEnvDefaults?: boolean },
+): OpenClawCatalogSkill | null {
+  return createOpenClawCatalogSkill({
+    ...options,
+    allowEnvDefaults: options?.allowEnvDefaults ?? true,
+  });
+}
+
+export function createOpenClawCatalogSkill(
+  options?: OpenClawCatalogSkillOptions & { roots?: string[]; allowEnvDefaults?: boolean },
 ): OpenClawCatalogSkill | null {
   const loadOptions = {} as {
     roots?: string[];
+    allowEnvDefaults?: boolean;
   };
   if (options?.roots) {
     loadOptions.roots = options.roots;
+  }
+  if (options?.allowEnvDefaults !== undefined) {
+    loadOptions.allowEnvDefaults = options.allowEnvDefaults;
   }
   const docs = loadOpenClawSkillDocs(loadOptions);
   if (docs.length === 0) {

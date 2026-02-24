@@ -8,8 +8,10 @@
 - OpenClaw `SKILL.md` 生态接入（按问题动态匹配注入）
 - Channel-first 网关（Telegram + Slack/Discord/WeChat bridge）
 - `/command` 会话控制（如 `/status`、`/agent`、`/memory`）
+- 轻量工具命令（`/tools`、`/grep`、`/skill`）
 - 运行中通知事件（`notify` / `progress` / `ask_user`）
 - 可读性策略（限制最终输出长度与结构）
+- 配置中心（`~/.config/opencarapace/config.toml`）
 - 单元 / 集成 / E2E 测试（当前重点覆盖 Codex）
 
 ## 使用 Bun
@@ -17,11 +19,33 @@
 ```bash
 bun install
 bun test
-bun run src/cli/chat.ts demo "帮我给一个发布计划" --agent codex
-bun run src/cli/chat.ts demo "/status"
-bun run src/cli/server.ts
-bun run src/cli/gateway.ts
+bun run opencarapace config init
+bun run opencarapace config tui
+bun run opencarapace chat demo "帮我给一个发布计划" --agent codex
+bun run opencarapace chat demo "/status"
+bun run opencarapace serve
+bun run opencarapace gateway
 ```
+
+## CLI 子命令
+
+```bash
+opencarapace chat <sessionId> <message> [--agent <agentId>]
+opencarapace serve
+opencarapace gateway
+opencarapace config path
+opencarapace config init
+opencarapace config show
+opencarapace config set <dot.path> <value>
+opencarapace config tui
+opencarapace config wizard
+```
+
+说明：
+
+- 所有运行配置只来自 `config.toml`（不读取环境变量）
+- 可通过 `--config /path/to/config.toml` 指定自定义配置文件
+- `config tui|wizard` 是分区向导（Runtime/Agents、Channels、Skills），可多次进入修改
 
 服务启动后：
 
@@ -51,36 +75,92 @@ curl -X POST http://127.0.0.1:3000/chat \
 - 每段正则：`[a-z][a-z0-9-]*`
 - 在 `SkillRuntime.register()` / `HookBus.register()` 强校验并拒绝重复 ID
 
+## 配置文件
+
+默认路径：`~/.config/opencarapace/config.toml`  
+可用命令生成默认配置：
+
+```bash
+bun run opencarapace config init
+```
+
+示例（节选）：
+
+```toml
+[runtime]
+default_agent_id = "codex"
+port = 3000
+gateway_port = 3010
+
+[agents.codex]
+enabled = true
+cli_command = "codex"
+cli_args = ["exec", "{{prompt}}"]
+
+[agents.cloudcode]
+enabled = false
+# 启用后必须提供真实命令
+# cli_command = "cloudcode"
+# cli_args = ["run", "{{prompt}}"]
+
+[agents.claude_code]
+enabled = false
+# 启用后必须提供真实命令
+# cli_command = "claude"
+# cli_args = ["-p", "{{prompt}}"]
+
+[channels.telegram]
+enabled = true
+token_file = "~/.secrets/telegram.token"
+allowed_chat_ids = ["12345"]
+
+[channels.slack]
+enabled = true
+inbound_secret_file = "~/.secrets/slack.inbound.secret"
+outbound_webhook_url = "https://example.com/webhook"
+
+[skills]
+enable_openclaw_catalog = true
+openclaw_root = "/Users/zzzz/Documents/openclaw"
+```
+
+敏感信息分离：
+
+- `token_file` / `inbound_secret_file` / `outbound_webhook_url_file` 支持外部文件
+- 也支持内联 `@file:/path/to/secret.txt` 或 `file:///path/to/secret.txt`
+- agent 参数也支持 `cli_args_file`（按行或 CSV）
+
+注意：
+
+- `cloudcode` 和 `claude-code` 不再提供 mock 输出
+- 如果把它们 `enabled=true`，必须配置对应 `cli_command`（否则启动时报错）
+
 ## Channel Gateway（无 UI）
 
 `gateway` 进程直接对接社交通讯渠道，用户不需要 Web UI。
 
 ### Telegram（真实可用）
 
+在 `config.toml` 启用并配置 token/token_file 后：
+
 ```bash
-export TELEGRAM_BOT_TOKEN=123456:xxx
-export CHANNEL_DEFAULT_AGENT_ID=codex
-bun run gateway
+bun run opencarapace gateway
 ```
-
-可选：
-
-- `TELEGRAM_ALLOWED_CHAT_IDS=12345,67890`
-- `TELEGRAM_POLL_TIMEOUT_SECONDS=25`
-- `TELEGRAM_RETRY_DELAY_MS=1200`
 
 ### 其他渠道（Bridge 方式）
 
 内置 bridge 适配器：`slack`、`discord`、`wechat`。  
 启用后通过统一 HTTP inbound 注入消息，outbound 走你配置的 webhook。
 
+`bridge` 模式含义：
+
+- 不是直接在你进程里跑 Slack/Discord/WeChat 原生 SDK/RTM 长连接
+- 而是由上游网关把文本消息桥接到 `POST /channels/:id/inbound`
+- OpenCarapace 只负责会话编排和文本回复回推（当前聚焦文本消息，媒体/语音/文件暂未启用）
+
 示例（Slack）：
 
-```bash
-export SLACK_BRIDGE_ENABLED=1
-export SLACK_BRIDGE_INBOUND_SECRET=your-secret
-export SLACK_BRIDGE_OUTBOUND_WEBHOOK_URL=https://your-gateway.example/send
-```
+在 `config.toml` 的 `[channels.slack]` 中配置并启用后即可。
 
 inbound endpoint:
 
@@ -107,14 +187,10 @@ body:
 
 ## OpenClaw Skills 生态接入
 
-默认会尝试从相邻仓库 `../openclaw/skills` 加载 `SKILL.md`。  
-也可显式配置：
+通过 `config.toml` 配置：
 
-```bash
-export OPENCARAPACE_OPENCLAW_ROOT=/path/to/openclaw
-# 或多个目录（逗号分隔）
-export OPENCARAPACE_OPENCLAW_SKILL_DIRS=/path/a,/path/b
-```
+- `skills.openclaw_root`
+- `skills.openclaw_skill_dirs`
 
 系统会按用户问题匹配最相关的技能片段注入。  
 可用命令查看目录：
@@ -122,12 +198,19 @@ export OPENCARAPACE_OPENCLAW_SKILL_DIRS=/path/a,/path/b
 - `/skills catalog`
 - `/skills catalog 50`
 
+也支持轻量工具命令（无需 embedding）：
+
+- `/tools`：查看可用工具
+- `/grep "<pattern>" [--path <dir-or-file>] [--limit <n>]`：grep/rg 搜索
+- `/skill [keywords]`：按关键词匹配技能
+- `/skill show <skill-id>`：查看技能摘要与片段
+
 ## Docker
 
 ```bash
 docker build -t open-carapace:dev .
-docker run --rm -p 3000:3000 \
-  -e TELEGRAM_BOT_TOKEN=123456:xxx \
+docker run --rm -p 3010:3010 \
+  -v ~/.config/opencarapace/config.toml:/root/.config/opencarapace/config.toml:ro \
   open-carapace:dev
 ```
 
@@ -142,4 +225,4 @@ export CODEX_CLI_ARGS='exec {{prompt}}'
 bun test test/e2e/codex-real.e2e.test.ts
 ```
 
-> 其他 agent（CloudCode / Claude Code）已完成抽象与接线，当前未启用实测。
+> 其他 agent（CloudCode / Claude Code）已完成真实 CLI 抽象接线；启用时请配置对应可执行命令。

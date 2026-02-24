@@ -82,15 +82,19 @@ export class CodexAgentAdapter extends BaseCodeAgentAdapter {
 }
 
 export function createCodexCliBackendFromEnv(): AgentBackend | null {
-  const command = process.env.CODEX_CLI_COMMAND?.trim();
+  return createCodexCliBackend();
+}
+
+export function createCodexCliBackend(params?: {
+  command?: string;
+  args?: string[];
+}): AgentBackend | null {
+  const command = params?.command?.trim();
   if (!command) {
     return null;
   }
 
-  const args = (process.env.CODEX_CLI_ARGS ?? "")
-    .split(" ")
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const args = (params?.args ?? []).map((part) => part.trim()).filter(Boolean);
 
   return new CliAgentBackend({
     command,
