@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { ChatOrchestrator } from "../core/orchestrator.js";
 import { isTurnAbortedError } from "../core/abort.js";
+import { buildFallbackSessionTitle } from "../core/session-title.js";
+import type { SessionRecord } from "../core/session.js";
 import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
 import { ChannelRegistry } from "./registry.js";
 import { buildChannelSessionId } from "./session-key.js";
+import {
+  buildTelegramSessionPickCallbackData,
+  TELEGRAM_SESSION_PICK_META_SESSION_ID,
+  TELEGRAM_SESSION_PICK_META_SESSION_NAME,
+  TELEGRAM_SESSION_PICK_META_TOKEN,
+} from "./telegram-session-picker.js";
 import type { TurnDecisionAction } from "./turn-decision.js";
 import {
   TURN_DECISION_META_ACTION,
@@ -26,6 +34,8 @@ import type {
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
+const TELEGRAM_SESSION_PICK_TTL_MS = 30 * 60 * 1000;
+const TELEGRAM_SESSION_PICK_MAX_ITEMS = 20;
 const RUNNING_ANIMATION_INTERVAL_MS = 500;
 const RUNNING_ANIMATION_FRAMES = [
   "🌑",
@@ -126,6 +136,86 @@ function looksLikeSlashCommand(input: string): boolean {
   return /^\/\S+/.test(trimmed);
 }
 
+function commandNameFromText(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) {
+    return undefined;
+  }
+  const body = trimmed.slice(1).trim();
+  if (!body) {
+    return undefined;
+  }
+  const head = body.split(/\s+/)[0]?.trim().toLowerCase();
+  if (!head) {
+    return undefined;
+  }
+  const atIndex = head.indexOf("@");
+  return atIndex > 0 ? head.slice(0, atIndex) : head;
+}
+
+function isSessionsCommandText(input: string): boolean {
+  return commandNameFromText(input) === "sessions";
+}
+
+function readTelegramSessionPickToken(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const token = metadata[TELEGRAM_SESSION_PICK_META_TOKEN];
+  if (typeof token !== "string" || !token.trim()) {
+    return undefined;
+  }
+  return token.trim();
+}
+
+function readTelegramSessionPickSessionId(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const sessionId = metadata[TELEGRAM_SESSION_PICK_META_SESSION_ID];
+  if (typeof sessionId !== "string" || !sessionId.trim()) {
+    return undefined;
+  }
+  return sessionId.trim();
+}
+
+function readTelegramSessionPickSessionName(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const name = metadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME];
+  if (typeof name !== "string" || !name.trim()) {
+    return undefined;
+  }
+  return name.trim();
+}
+
+function resolveSessionDisplayName(session: SessionRecord): string {
+  const metadataName =
+    typeof session.metadata?.session_name === "string" && session.metadata.session_name.trim()
+      ? session.metadata.session_name.trim()
+      : "";
+  if (metadataName) {
+    return metadataName;
+  }
+  const firstUser = session.messages.find((message) => message.role === "user");
+  if (firstUser?.content?.trim()) {
+    return buildFallbackSessionTitle(firstUser.content.trim());
+  }
+  return session.id;
+}
+
+function clipSessionDisplayName(name: string, maxChars = 28): string {
+  const normalized = name.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "New Session";
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
 function cloneMetadata(metadata: unknown): Record<string, unknown> {
   if (!isRecord(metadata)) {
     return {};
@@ -180,6 +270,16 @@ type PendingTurnDecision = {
 type StackedQueueEntry = {
   id: string;
   preview: string;
+};
+
+type PendingTelegramSessionPick = {
+  token: string;
+  sessionId: string;
+  sessionName: string;
+  channelId: ChannelId;
+  chatId: string;
+  threadId?: string;
+  createdAt: number;
 };
 
 class ChannelTurnRelay {
@@ -378,9 +478,15 @@ class ChannelTurnRelay {
       this.progressMessageId &&
       this.adapter.editMessage
     ) {
-      await this.editProgressMessage(rendered);
-      this.startProgressAnimation();
-      return;
+      try {
+        await this.editProgressMessage(rendered);
+        this.startProgressAnimation();
+        return;
+      } catch {
+        // Degrade to sending a fresh progress message when edit fails.
+        this.stopProgressAnimation();
+        this.progressMessageId = undefined;
+      }
     }
 
     const sent = await this.sendText(rendered, this.runningControlMetadata());
@@ -414,7 +520,10 @@ class ChannelTurnRelay {
       return;
     }
     this.animationTimer = setInterval(() => {
-      void this.tickProgressAnimation();
+      void this.tickProgressAnimation().catch(() => {
+        // Keep gateway alive even if channel edit is rate-limited/transiently failing.
+        this.stopProgressAnimation();
+      });
     }, RUNNING_ANIMATION_INTERVAL_MS);
   }
 
@@ -538,6 +647,10 @@ export class ChannelGateway {
     PendingTurnDecision
   >();
   private readonly stackedTurnQueues = new Map<string, StackedQueueEntry[]>();
+  private readonly pendingTelegramSessionPicks = new Map<
+    string,
+    PendingTelegramSessionPick
+  >();
 
   constructor(deps: ChannelGatewayDeps) {
     this.orchestrator = deps.orchestrator;
@@ -572,8 +685,21 @@ export class ChannelGateway {
 
   async handleInbound(message: ChannelInboundMessage): Promise<ChatTurnResult> {
     const channel = this.registry.require(message.channelId);
-    const sessionId = buildChannelSessionId(message);
+    const defaultSessionId = buildChannelSessionId(message);
     const agentId = this.resolveAgentId(message.channelId);
+    const pickToken = readTelegramSessionPickToken(message.metadata);
+    if (pickToken) {
+      return await this.handleTelegramSessionPickSelection({
+        channel,
+        message,
+        sessionId: defaultSessionId,
+        agentId,
+        token: pickToken,
+      });
+    }
+
+    const sessionId = readTelegramSessionPickSessionId(message.metadata) ?? defaultSessionId;
+    const selectedSessionName = readTelegramSessionPickSessionName(message.metadata);
     const turnDecision = readTurnDecisionSelection(message.metadata);
     if (turnDecision) {
       return await this.handleTurnDecisionSelection({
@@ -618,6 +744,9 @@ export class ChannelGateway {
       delete normalizedMetadata[TURN_DECISION_META_TOKEN];
       delete normalizedMetadata[TURN_DECISION_META_BYPASS];
       delete normalizedMetadata[TURN_DECISION_META_FORCE_STEER];
+      delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_TOKEN];
+      delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID];
+      delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME];
 
       const result = await this.orchestrator.chat({
         agentId,
@@ -643,8 +772,18 @@ export class ChannelGateway {
         },
       });
 
-      await relay.finalize(result);
-      return result;
+      const decorated = selectedSessionName
+        ? this.decorateSelectedSessionHistory(
+            result,
+            sessionId,
+            selectedSessionName,
+          )
+        : result;
+      await relay.finalize(decorated);
+      if (channel.id === "telegram" && isSessionsCommandText(message.text)) {
+        await this.sendTelegramSessionPicker(channel, message);
+      }
+      return decorated;
     } catch (error) {
       if (isTurnAbortedError(error)) {
         return this.emptyTurnResult(agentId, sessionId);
@@ -732,6 +871,51 @@ export class ChannelGateway {
     }
   }
 
+  private async handleTelegramSessionPickSelection(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    token: string;
+  }): Promise<ChatTurnResult> {
+    this.pruneTelegramSessionPickEntries();
+    const pending = this.pendingTelegramSessionPicks.get(params.token);
+    if (!pending) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个会话选项已过期，请重新执行 /sessions。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+    const sameThread =
+      (pending.threadId ?? "").trim() === (params.message.threadId ?? "").trim();
+    if (
+      pending.channelId !== params.message.channelId ||
+      pending.chatId !== params.message.chatId ||
+      !sameThread
+    ) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个会话选项不属于当前对话，请重新执行 /sessions。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.pendingTelegramSessionPicks.delete(params.token);
+    const replayMetadata = cloneMetadata(params.message.metadata);
+    delete replayMetadata[TELEGRAM_SESSION_PICK_META_TOKEN];
+    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID] = pending.sessionId;
+    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME] = pending.sessionName;
+    const replay: ChannelInboundMessage = {
+      ...params.message,
+      text: "/history 20",
+      metadata: replayMetadata,
+    };
+    return await this.handleInbound(replay);
+  }
+
   private async promptTurnDecision(
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
@@ -803,6 +987,91 @@ export class ChannelGateway {
       outbound.replyToMessageId = inbound.messageId;
     }
     await channel.sendMessage(outbound);
+  }
+
+  private decorateSelectedSessionHistory(
+    result: ChatTurnResult,
+    sessionId: string,
+    sessionName: string,
+  ): ChatTurnResult {
+    const heading = `Session: ${sessionName}\nID: ${sessionId}`;
+    const body = result.finalText.trim();
+    const finalText = body ? `${heading}\n\n${body}` : heading;
+    return {
+      ...result,
+      finalText,
+      rawFinalText: finalText,
+    };
+  }
+
+  private async sendTelegramSessionPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+  ): Promise<void> {
+    const sessions = this.orchestrator.sessions.list().slice(0, TELEGRAM_SESSION_PICK_MAX_ITEMS);
+    if (sessions.length === 0) {
+      return;
+    }
+    this.pruneTelegramSessionPickEntries();
+
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    for (const [index, session] of sessions.entries()) {
+      const token = randomUUID();
+      const sessionName = resolveSessionDisplayName(session);
+      this.pendingTelegramSessionPicks.set(token, {
+        token,
+        sessionId: session.id,
+        sessionName,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        threadId: inbound.threadId,
+        createdAt: Date.now(),
+      });
+      const callbackData = buildTelegramSessionPickCallbackData(token);
+      if (!callbackData) {
+        continue;
+      }
+      rows.push([
+        {
+          text: `${index + 1}. ${clipSessionDisplayName(sessionName)}`,
+          callback_data: callbackData,
+        },
+      ]);
+    }
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: "点击会话可查看该会话名称和最近 20 条 history：",
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: rows,
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private pruneTelegramSessionPickEntries(): void {
+    const now = Date.now();
+    for (const [token, entry] of this.pendingTelegramSessionPicks.entries()) {
+      if (now - entry.createdAt > TELEGRAM_SESSION_PICK_TTL_MS) {
+        this.pendingTelegramSessionPicks.delete(token);
+      }
+    }
   }
 
   private enqueueStackedTurn(

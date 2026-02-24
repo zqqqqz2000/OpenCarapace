@@ -3,6 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  TELEGRAM_SESSION_PICK_META_TOKEN,
+  parseTelegramSessionPickCallbackData,
+} from "./telegram-session-picker.js";
+import {
   isTurnRunningStopCallbackData,
   parseTurnDecisionCallbackData,
   TURN_DECISION_META_ACTION,
@@ -353,6 +357,15 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "commands", description: "Alias of help" },
 ];
 
+function buildDefaultReplyKeyboardMarkup(): Record<string, unknown> {
+  return {
+    keyboard: [[{ text: "/new" }, { text: "/sessions" }]],
+    resize_keyboard: true,
+    is_persistent: true,
+    one_time_keyboard: false,
+  };
+}
+
 export class TelegramChannelAdapter implements ChannelAdapter {
   readonly id = "telegram" as const;
   readonly displayName = "Telegram";
@@ -422,9 +435,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       payload.parse_mode = parseMode;
     }
     const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
-    if (replyMarkup) {
-      payload.reply_markup = replyMarkup;
-    }
+    payload.reply_markup = replyMarkup ?? buildDefaultReplyKeyboardMarkup();
 
     const replyTo = normalizeOptionalInt(message.replyToMessageId);
     if (replyTo !== undefined) {
@@ -541,7 +552,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
     const decision = parseTurnDecisionCallbackData(rawData);
     const stopRequested = isTurnRunningStopCallbackData(rawData);
-    if (!decision && !stopRequested) {
+    const sessionPick = parseTelegramSessionPickCallbackData(rawData);
+    if (!decision && !stopRequested && !sessionPick) {
       this.acknowledgeCallbackQuery(callbackId);
       return;
     }
@@ -555,13 +567,19 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const inbound: ChannelInboundMessage = {
       channelId: this.id,
       chatId,
-      text: stopRequested ? "/stop" : "/turn-decision",
+      text: stopRequested ? "/stop" : sessionPick ? "/session-pick" : "/turn-decision",
       raw: callbackQuery,
     };
     if (decision) {
       inbound.metadata = {
         [TURN_DECISION_META_ACTION]: decision.action,
         [TURN_DECISION_META_TOKEN]: decision.token,
+      };
+    }
+    if (sessionPick) {
+      inbound.metadata = {
+        ...(inbound.metadata ?? {}),
+        [TELEGRAM_SESSION_PICK_META_TOKEN]: sessionPick.token,
       };
     }
 
@@ -588,7 +606,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
     this.acknowledgeCallbackQuery(
       callbackId,
-      stopRequested ? "已请求 stop" : decision?.action === "steer" ? "已选择 steer" : "已选择 stack",
+      stopRequested
+        ? "已请求 stop"
+        : decision
+          ? decision.action === "steer"
+            ? "已选择 steer"
+            : "已选择 stack"
+          : "已选择会话",
     );
     void handler(inbound).catch(() => {
       // Isolate per-message handler failures from polling loop.

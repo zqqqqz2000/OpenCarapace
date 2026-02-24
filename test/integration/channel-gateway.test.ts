@@ -24,6 +24,10 @@ import {
   TURN_RUNNING_STOP_CALLBACK,
   parseTurnDecisionCallbackData,
 } from "../../src/channels/turn-decision.js";
+import {
+  parseTelegramSessionPickCallbackData,
+  TELEGRAM_SESSION_PICK_META_TOKEN,
+} from "../../src/channels/telegram-session-picker.js";
 import { createDeterministicOrchestrator } from "../support/orchestrator.js";
 
 const RUNNING_EMOJI_PREFIX = /^(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)\s/;
@@ -232,6 +236,33 @@ function findLatestTurnDecisionCallback(
     }
   }
   throw new Error(`missing latest callback token for action=${action}`);
+}
+
+function findSessionPickCallback(messages: ChannelOutboundMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData) {
+          continue;
+        }
+        const parsed = parseTelegramSessionPickCallbackData(callbackData);
+        if (parsed) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error("missing session picker callback token");
 }
 
 describe("ChannelGateway", () => {
@@ -659,6 +690,94 @@ describe("ChannelGateway", () => {
     expect(sessionsTurn.finalText).toContain("⟳ ");
     expect(adapter.sent.some((message) => message.text.includes("⟳ "))).toBeTrue();
     await runningTurn;
+  });
+
+  test("sends clickable telegram session picker after /sessions", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-menu",
+      messageId: "picker-1",
+      text: "帮我先创建一个会话",
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-menu",
+      messageId: "picker-2",
+      text: "/sessions",
+    });
+
+    const token = findSessionPickCallback(adapter.sent);
+    expect(token.length).toBeGreaterThan(0);
+    expect(
+      adapter.sent.some((message) => message.text.includes("点击会话可查看该会话名称和最近 20 条 history")),
+    ).toBeTrue();
+  });
+
+  test("renders selected session name and last-20 history after picker callback", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-history",
+      messageId: "pick-h-1",
+      text: "这是会话历史第一条消息",
+    });
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-history",
+      messageId: "pick-h-2",
+      text: "这是会话历史第二条消息",
+    });
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-history",
+      messageId: "pick-h-3",
+      text: "/sessions",
+    });
+
+    const token = findSessionPickCallback(adapter.sent);
+    const picked = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-picker-history",
+      messageId: "pick-h-4",
+      text: "/session-pick",
+      metadata: {
+        [TELEGRAM_SESSION_PICK_META_TOKEN]: token,
+      },
+    });
+
+    expect(picked.finalText).toContain("Session:");
+    expect(picked.finalText).toContain("History (last");
+    expect(picked.finalText).toContain("这是会话历史第一条消息");
+    expect(
+      adapter.sent.some(
+        (message) =>
+          message.text.includes("Session:") && message.text.includes("History (last"),
+      ),
+    ).toBeTrue();
   });
 
   test("sends tail-preview plus full-text attachment for long telegram replies", async () => {
