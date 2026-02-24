@@ -37,6 +37,7 @@ export * from "./channels/session-key.js";
 export * from "./channels/gateway.js";
 export * from "./channels/telegram.js";
 export * from "./channels/bridge.js";
+export * from "./channels/turn-decision.js";
 export * from "./channels/factory.js";
 export * from "./config/index.js";
 export * from "./integrations/openclaw-skills.js";

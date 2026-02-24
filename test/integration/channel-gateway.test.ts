@@ -18,6 +18,11 @@ import { SkillRuntime } from "../../src/core/skills.js";
 import { ToolRuntime } from "../../src/core/tools.js";
 import type { AgentEventSink, AgentTurnRequest, AgentTurnResult } from "../../src/core/types.js";
 import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
+import {
+  TURN_DECISION_META_ACTION,
+  TURN_DECISION_META_TOKEN,
+  parseTurnDecisionCallbackData,
+} from "../../src/channels/turn-decision.js";
 import { createDeterministicOrchestrator } from "../support/orchestrator.js";
 
 class CaptureChannelAdapter implements ChannelAdapter {
@@ -167,6 +172,35 @@ function createLongOutputOrchestrator(finalText: string): ChatOrchestrator {
   });
 }
 
+function findTurnDecisionCallback(
+  messages: ChannelOutboundMessage[],
+  action: "steer" | "stack",
+): string {
+  for (const message of messages) {
+    const metadata = message.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData) {
+          continue;
+        }
+        const parsed = parseTurnDecisionCallbackData(callbackData);
+        if (parsed && parsed.action === action) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error(`missing callback token for action=${action}`);
+}
+
 describe("ChannelGateway", () => {
   test("sends progress updates and final text during long turn", async () => {
     const adapter = new CaptureChannelAdapter();
@@ -217,7 +251,45 @@ describe("ChannelGateway", () => {
     expect(adapter.sent.some((message) => message.text.includes("Available commands"))).toBeTrue();
   });
 
-  test("steers to latest non-command input by interrupting the running turn", async () => {
+  test("shows steer/stack choices when new non-command input arrives during a running turn", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const firstPromise = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-steer-choice",
+      messageId: "100",
+      text: "先处理这个很慢的任务",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const secondResult = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-steer-choice",
+      messageId: "101",
+      text: "这是运行中的新消息",
+    });
+
+    expect(secondResult.finalText).toBe("");
+    const token = findTurnDecisionCallback(adapter.sent, "steer");
+    expect(token.length).toBeGreaterThan(0);
+    const prompt = adapter.sent.find((message) => message.text.includes("steer") && message.text.includes("stack"));
+    expect(prompt).toBeDefined();
+
+    await firstPromise;
+  });
+
+  test("applies steer option to interrupt current turn and switch to latest message", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();
     registry.register(adapter);
@@ -246,16 +318,77 @@ describe("ChannelGateway", () => {
       text: "改成处理这个最新任务",
     });
 
+    const steerToken = findTurnDecisionCallback(adapter.sent, "steer");
+    const steerResult = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-steer",
+      messageId: "102",
+      text: "/turn-decision",
+      metadata: {
+        [TURN_DECISION_META_ACTION]: "steer",
+        [TURN_DECISION_META_TOKEN]: steerToken,
+      },
+    });
+
     const firstResult = await firstPromise;
 
+    expect(secondResult.finalText).toBe("");
     expect(firstResult.finalText).toBe("");
-    expect(secondResult.finalText).toContain("done-2");
+    expect(steerResult.finalText).toContain("done-2");
     expect(
-      adapter.sent.some((message) => message.text.includes("已收到新消息，正在中断当前任务并按最新输入继续。")),
+      adapter.sent.some((message) => message.text.includes("已选择 1. steer")),
     ).toBeTrue();
     expect(
       adapter.sent.some((message) => message.text.includes("任务执行失败")),
     ).toBeFalse();
+  });
+
+  test("applies stack option to queue latest message behind running turn", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const firstPromise = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack",
+      messageId: "110",
+      text: "慢任务先跑",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const queued = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack",
+      messageId: "111",
+      text: "后续排队任务",
+    });
+    expect(queued.finalText).toBe("");
+
+    const stackToken = findTurnDecisionCallback(adapter.sent, "stack");
+    const stackedResult = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack",
+      messageId: "112",
+      text: "/turn-decision",
+      metadata: {
+        [TURN_DECISION_META_ACTION]: "stack",
+        [TURN_DECISION_META_TOKEN]: stackToken,
+      },
+    });
+
+    const firstResult = await firstPromise;
+    expect(firstResult.finalText).toContain("done-1");
+    expect(stackedResult.finalText).toContain("done-2");
+    expect(adapter.sent.some((message) => message.text.includes("已选择 2. stack"))).toBeTrue();
   });
 
   test("runs slash commands in parallel while a non-command turn is running", async () => {

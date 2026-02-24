@@ -150,6 +150,11 @@ export class ChatOrchestrator {
     return true;
   }
 
+  isTurnRunning(sessionId: string): boolean {
+    const controller = this.runningTurns.get(sessionId);
+    return Boolean(controller && !controller.signal.aborted);
+  }
+
   private async chatUnsafe(params: ChatTurnParams): Promise<ChatTurnResult> {
     const sessionAbort = new AbortController();
     const cleanupExternalAbort = this.bindExternalAbort(params.abortSignal, sessionAbort);

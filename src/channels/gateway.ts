@@ -1,8 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { ChatOrchestrator } from "../core/orchestrator.js";
 import { isTurnAbortedError } from "../core/abort.js";
 import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
 import { ChannelRegistry } from "./registry.js";
 import { buildChannelSessionId } from "./session-key.js";
+import type { TurnDecisionAction } from "./turn-decision.js";
+import {
+  TURN_DECISION_META_ACTION,
+  TURN_DECISION_META_BYPASS,
+  TURN_DECISION_META_FORCE_STEER,
+  TURN_DECISION_META_TOKEN,
+  buildTurnDecisionCallbackData,
+} from "./turn-decision.js";
 import type {
   ChannelAdapter,
   ChannelAgentRouting,
@@ -16,6 +25,10 @@ import type {
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function clipText(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -96,9 +109,49 @@ function looksLikeSlashCommand(input: string): boolean {
   return /^\/\S+/.test(trimmed);
 }
 
+function cloneMetadata(metadata: unknown): Record<string, unknown> {
+  if (!isRecord(metadata)) {
+    return {};
+  }
+  return {
+    ...metadata,
+  };
+}
+
+function readTurnDecisionSelection(
+  metadata: unknown,
+): { action: TurnDecisionAction; token: string } | null {
+  if (!isRecord(metadata)) {
+    return null;
+  }
+  const action = metadata[TURN_DECISION_META_ACTION];
+  const token = metadata[TURN_DECISION_META_TOKEN];
+  if ((action === "steer" || action === "stack") && typeof token === "string" && token.trim()) {
+    return {
+      action,
+      token: token.trim(),
+    };
+  }
+  return null;
+}
+
+function shouldBypassTurnDecision(metadata: unknown): boolean {
+  return isRecord(metadata) && metadata[TURN_DECISION_META_BYPASS] === true;
+}
+
+function shouldForceSteer(metadata: unknown): boolean {
+  return isRecord(metadata) && metadata[TURN_DECISION_META_FORCE_STEER] === true;
+}
+
 type TurnRelayOptions = {
   progressThrottleMs?: number;
   deltaPreviewMaxChars?: number;
+};
+
+type PendingTurnDecision = {
+  token: string;
+  inbound: ChannelInboundMessage;
+  createdAt: number;
 };
 
 class ChannelTurnRelay {
@@ -292,6 +345,7 @@ export class ChannelGateway {
   readonly orchestrator: ChatOrchestrator;
   readonly registry: ChannelRegistry;
   readonly routing: ChannelAgentRouting;
+  private readonly pendingTurnDecisions = new Map<string, PendingTurnDecision>();
 
   constructor(deps: ChannelGatewayDeps) {
     this.orchestrator = deps.orchestrator;
@@ -328,24 +382,44 @@ export class ChannelGateway {
     const channel = this.registry.require(message.channelId);
     const sessionId = buildChannelSessionId(message);
     const agentId = this.resolveAgentId(message.channelId);
-    const relay = new ChannelTurnRelay(channel, message);
+    const turnDecision = readTurnDecisionSelection(message.metadata);
+    if (turnDecision) {
+      return await this.handleTurnDecisionSelection({
+        channel,
+        message,
+        sessionId,
+        agentId,
+        selection: turnDecision,
+      });
+    }
+
+    if (this.pendingTurnDecisions.has(sessionId) && !this.orchestrator.isTurnRunning(sessionId)) {
+      this.pendingTurnDecisions.delete(sessionId);
+    }
+
+    const bypassTurnDecision = shouldBypassTurnDecision(message.metadata);
     const isCommandMessage = looksLikeSlashCommand(message.text);
+    if (!isCommandMessage && this.orchestrator.isTurnRunning(sessionId) && !bypassTurnDecision) {
+      await this.promptTurnDecision(channel, message, sessionId);
+      return this.emptyTurnResult(agentId, sessionId);
+    }
+
+    const relay = new ChannelTurnRelay(channel, message);
     const steerTriggered =
       !isCommandMessage &&
+      shouldForceSteer(message.metadata) &&
       this.orchestrator.cancelRunningTurn(
         sessionId,
         `Steered by newer message ${message.messageId ?? "(no-message-id)"}`,
       );
 
-    if (steerTriggered) {
-      await this.sendAuxiliaryMessage(
-        channel,
-        message,
-        "已收到新消息，正在中断当前任务并按最新输入继续。",
-      );
-    }
-
     try {
+      const normalizedMetadata = cloneMetadata(message.metadata);
+      delete normalizedMetadata[TURN_DECISION_META_ACTION];
+      delete normalizedMetadata[TURN_DECISION_META_TOKEN];
+      delete normalizedMetadata[TURN_DECISION_META_BYPASS];
+      delete normalizedMetadata[TURN_DECISION_META_FORCE_STEER];
+
       const result = await this.orchestrator.chat({
         agentId,
         sessionId,
@@ -363,7 +437,7 @@ export class ChannelGateway {
           imagePaths: message.imagePaths,
           rawInbound: message.raw,
           steer: steerTriggered,
-          ...(message.metadata ?? {}),
+          ...normalizedMetadata,
         },
         onEvent: async (event) => {
           await relay.onEvent(event);
@@ -374,12 +448,7 @@ export class ChannelGateway {
       return result;
     } catch (error) {
       if (isTurnAbortedError(error)) {
-        return {
-          agentId,
-          sessionId,
-          finalText: "",
-          events: [],
-        };
+        return this.emptyTurnResult(agentId, sessionId);
       }
 
       const reason = error instanceof Error ? error.message : String(error);
@@ -402,6 +471,106 @@ export class ChannelGateway {
     }
   }
 
+  private async handleTurnDecisionSelection(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    selection: {
+      action: TurnDecisionAction;
+      token: string;
+    };
+  }): Promise<ChatTurnResult> {
+    const pending = this.pendingTurnDecisions.get(params.sessionId);
+    if (!pending) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "当前没有待决策的新消息，请直接发送新消息。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    if (pending.token !== params.selection.token) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个选项已过期，请按最新提示选择。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.pendingTurnDecisions.delete(params.sessionId);
+    const forceSteer = params.selection.action === "steer";
+    await this.sendAuxiliaryMessage(
+      params.channel,
+      params.message,
+      forceSteer
+        ? "已选择 1. steer：正在中断当前任务并切换到新消息。"
+        : "已选择 2. stack：新消息已进入队列。",
+    );
+
+    const replayMetadata = cloneMetadata(pending.inbound.metadata);
+    replayMetadata[TURN_DECISION_META_BYPASS] = true;
+    replayMetadata[TURN_DECISION_META_FORCE_STEER] = forceSteer;
+    const replay: ChannelInboundMessage = {
+      ...pending.inbound,
+      metadata: replayMetadata,
+    };
+    return await this.handleInbound(replay);
+  }
+
+  private async promptTurnDecision(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+  ): Promise<void> {
+    const token = randomUUID();
+    this.pendingTurnDecisions.set(sessionId, {
+      token,
+      inbound,
+      createdAt: Date.now(),
+    });
+
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: [
+        "<b>检测到你发送了新消息</b>",
+        "当前任务仍在运行，请选择处理方式：",
+        "1. <b>steer</b>：中断当前任务并切换到新消息",
+        "2. <b>stack</b>：保持当前任务，新消息进入队列",
+      ].join("\n"),
+      metadata: {
+        telegram_parse_mode: "HTML",
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "1. Steer",
+                callback_data: buildTurnDecisionCallbackData(token, "steer"),
+              },
+              {
+                text: "2. Stack",
+                callback_data: buildTurnDecisionCallbackData(token, "stack"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
   private async sendAuxiliaryMessage(
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
@@ -422,6 +591,16 @@ export class ChannelGateway {
       outbound.replyToMessageId = inbound.messageId;
     }
     await channel.sendMessage(outbound);
+  }
+
+  private emptyTurnResult(agentId: AgentId, sessionId: string): ChatTurnResult {
+    return {
+      agentId,
+      sessionId,
+      finalText: "",
+      rawFinalText: "",
+      events: [],
+    };
   }
 
   private resolveAgentId(channelId: ChannelId): AgentId {

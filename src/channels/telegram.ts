@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { parseTurnDecisionCallbackData, TURN_DECISION_META_ACTION, TURN_DECISION_META_TOKEN } from "./turn-decision.js";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -102,10 +103,18 @@ type DownloadedTelegramAttachments = {
   errors: string[];
 };
 
+type TelegramCallbackQuery = {
+  id: string;
+  from?: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+};
+
 type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 };
 
 type TelegramGetUpdatesResponse = TelegramApiEnvelope<TelegramUpdate[]>;
@@ -120,6 +129,10 @@ export type TelegramChannelAdapterOptions = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeOptionalInt(value: string | undefined): number | undefined {
@@ -138,6 +151,28 @@ function normalizeOptionalString(value: number | string | undefined): string | u
     return undefined;
   }
   return String(value);
+}
+
+function resolveTelegramParseMode(metadata: unknown): "MarkdownV2" | "HTML" | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const raw = metadata.telegram_parse_mode;
+  if (raw === "MarkdownV2" || raw === "HTML") {
+    return raw;
+  }
+  return undefined;
+}
+
+function resolveTelegramReplyMarkup(metadata: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const value = metadata.telegram_reply_markup;
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return value;
 }
 
 function resolveInboundText(message: TelegramMessage): string {
@@ -356,6 +391,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       text: message.text,
       disable_web_page_preview: true,
     };
+    const parseMode = resolveTelegramParseMode(message.metadata);
+    if (parseMode) {
+      payload.parse_mode = parseMode;
+    }
+    const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
+    if (replyMarkup) {
+      payload.reply_markup = replyMarkup;
+    }
 
     const replyTo = normalizeOptionalInt(message.replyToMessageId);
     if (replyTo !== undefined) {
@@ -438,12 +481,96 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     return receipt;
   }
 
+  private async handleCallbackQuery(
+    callbackQuery: TelegramCallbackQuery,
+    handler: ChannelInboundHandler,
+  ): Promise<void> {
+    const callbackId = callbackQuery.id?.trim();
+    const rawData = callbackQuery.data?.trim();
+    const message = callbackQuery.message;
+    if (!callbackId || !rawData || !message) {
+      return;
+    }
+
+    const decision = parseTurnDecisionCallbackData(rawData);
+    if (!decision) {
+      await this.answerCallbackQuery(callbackId);
+      return;
+    }
+
+    const chatId = String(message.chat.id);
+    if (this.allowedChatIds && !this.allowedChatIds.has(chatId)) {
+      await this.answerCallbackQuery(callbackId);
+      return;
+    }
+
+    const inbound: ChannelInboundMessage = {
+      channelId: this.id,
+      chatId,
+      text: "/turn-decision",
+      raw: callbackQuery,
+      metadata: {
+        [TURN_DECISION_META_ACTION]: decision.action,
+        [TURN_DECISION_META_TOKEN]: decision.token,
+      },
+    };
+
+    const senderId = normalizeOptionalString(callbackQuery.from?.id);
+    if (senderId) {
+      inbound.senderId = senderId;
+    }
+    const senderName = callbackQuery.from?.username || callbackQuery.from?.first_name;
+    if (senderName) {
+      inbound.senderName = senderName;
+    }
+    const messageId = normalizeOptionalString(message.message_id);
+    if (messageId) {
+      inbound.messageId = messageId;
+    }
+    const threadId = normalizeOptionalString(message.message_thread_id);
+    if (threadId) {
+      inbound.threadId = threadId;
+    }
+    const replyToMessageId = normalizeOptionalString(message.reply_to_message?.message_id);
+    if (replyToMessageId) {
+      inbound.replyToMessageId = replyToMessageId;
+    }
+
+    await this.answerCallbackQuery(
+      callbackId,
+      decision.action === "steer" ? "已选择 steer" : "已选择 stack",
+    );
+    void handler(inbound).catch(() => {
+      // Isolate per-message handler failures from polling loop.
+    });
+  }
+
+  private async answerCallbackQuery(callbackId: string, text?: string): Promise<void> {
+    const payload: Record<string, unknown> = {
+      callback_query_id: callbackId,
+    };
+    const normalized = text?.trim();
+    if (normalized) {
+      payload.text = normalized;
+    }
+    try {
+      await this.callApi<boolean>("answerCallbackQuery", payload);
+    } catch {
+      // Best-effort acknowledgement.
+    }
+  }
+
   private async runPollLoop(handler: ChannelInboundHandler, signal: AbortSignal): Promise<void> {
     while (this.running && !signal.aborted) {
       try {
         const updates = await this.fetchUpdates(signal);
         for (const update of updates) {
           this.offset = Math.max(this.offset, update.update_id + 1);
+          const callbackQuery = update.callback_query;
+          if (callbackQuery) {
+            await this.handleCallbackQuery(callbackQuery, handler);
+            continue;
+          }
           const message = update.message ?? update.edited_message;
           if (!message) {
             continue;
@@ -541,7 +668,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const payload = {
       offset: this.offset,
       timeout: this.pollTimeoutSeconds,
-      allowed_updates: ["message", "edited_message"],
+      allowed_updates: ["message", "edited_message", "callback_query"],
     };
     const response = await this.callApi<TelegramUpdate[]>("getUpdates", payload, signal);
     return response;
