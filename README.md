@@ -7,6 +7,7 @@
 - Skill 注入体系（含 Memory Skill）
 - OpenClaw `SKILL.md` 生态接入（按问题动态匹配注入）
 - Channel-first 网关（Telegram + Slack/Discord/WeChat bridge）
+- Telegram 图片入站（下载到临时目录并把本地路径注入 Codex prompt）
 - `/command` 会话控制（如 `/status`、`/agent`、`/memory`）
 - 轻量工具命令（`/tools`、`/grep`、`/skill`）
 - 运行中通知事件（`notify` / `progress` / `ask_user`）
@@ -152,6 +153,15 @@ openclaw_root = "/Users/zzzz/Documents/openclaw"
 bun run opencarapace gateway
 ```
 
+图片消息处理（Telegram 原生 channel）：
+
+- 支持用户发送 `photo`（可带 caption）
+- 网关会调用 Telegram `getFile`，将图片下载到本地临时目录：
+  - `${TMPDIR}/opencarapace/telegram-media`（例如 `/tmp/opencarapace/telegram-media`）
+- 下载后的本地路径会写入本轮请求 metadata（`imagePaths`）
+- Codex adapter 会把这些本地路径附加进用户 prompt，便于 agent 在同一轮读取图片上下文
+- 若图片下载失败，文本消息仍会继续处理（失败信息放入 metadata）
+
 ### 其他渠道（Bridge 方式）
 
 内置 bridge 适配器：`slack`、`discord`、`wechat`。  
@@ -161,7 +171,9 @@ bun run opencarapace gateway
 
 - 不是直接在你进程里跑 Slack/Discord/WeChat 原生 SDK/RTM 长连接
 - 而是由上游网关把文本消息桥接到 `POST /channels/:id/inbound`
-- OpenCarapace 只负责会话编排和文本回复回推（当前聚焦文本消息，媒体/语音/文件暂未启用）
+- OpenCarapace 只负责会话编排和文本回复回推
+- 当前桥接渠道（Slack/Discord/WeChat）聚焦文本消息；媒体/语音/文件暂未启用
+- Telegram 原生渠道已支持图片入站并注入本地图片路径到 Codex prompt
 
 示例（Slack）：
 
