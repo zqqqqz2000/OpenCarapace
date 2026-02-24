@@ -1,0 +1,7 @@
+.git
+node_modules
+bun.lockb
+coverage
+dist
+test
+*.log

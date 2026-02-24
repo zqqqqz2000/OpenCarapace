@@ -1,0 +1,76 @@
+import { describe, expect, test } from "bun:test";
+import { ConversationCommandService, parseSlashCommand } from "../../src/core/commands.js";
+import { AgentRegistry } from "../../src/core/agent.js";
+import { SessionManager, InMemorySessionStore } from "../../src/core/session.js";
+import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
+import { CodexAgentAdapter } from "../../src/adapters/codex.js";
+import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
+
+function createService(): ConversationCommandService {
+  const registry = new AgentRegistry();
+  registry.register(new CodexAgentAdapter());
+  registry.register(new CloudCodeAgentAdapter());
+
+  const skills = new SkillRuntime();
+  skills.register(
+    new InstructionSkill({
+      id: "codex.readable.final",
+      description: "readable final",
+      instruction: "keep final concise",
+      appliesTo: ["codex"],
+    }),
+  );
+
+  return new ConversationCommandService({
+    registry,
+    sessions: new SessionManager(new InMemorySessionStore()),
+    skills,
+  });
+}
+
+describe("parseSlashCommand", () => {
+  test("parses command name and args", () => {
+    expect(parseSlashCommand("/memory show 3")).toEqual({
+      name: "memory",
+      args: ["show", "3"],
+      raw: "/memory show 3",
+    });
+  });
+
+  test("handles quoted args", () => {
+    const parsed = parseSlashCommand("/agent \"cloudcode\"");
+    expect(parsed?.name).toBe("agent");
+    expect(parsed?.args).toEqual(["cloudcode"]);
+  });
+
+  test("returns null for non command input", () => {
+    expect(parseSlashCommand("hello")).toBeNull();
+  });
+});
+
+describe("ConversationCommandService", () => {
+  test("returns help from /command list", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s1",
+      currentAgentId: "codex",
+      input: "/command list",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("/status");
+  });
+
+  test("switches agent on /agent command", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s1",
+      currentAgentId: "codex",
+      input: "/agent cloudcode",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.agentId).toBe("cloudcode");
+    expect(result.finalText).toContain("Agent switched");
+  });
+});

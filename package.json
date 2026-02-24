@@ -1,0 +1,21 @@
+{
+  "name": "open-carapace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi code-agent orchestration layer with channel-friendly streaming UX",
+  "packageManager": "bun@1.3.0",
+  "scripts": {
+    "build": "bun run tsc -p tsconfig.json",
+    "typecheck": "bun run tsc -p tsconfig.json --noEmit",
+    "test": "bun test ./test",
+    "test:e2e": "bun test ./test/e2e",
+    "start": "bun run src/cli/server.ts",
+    "chat": "bun run src/cli/chat.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "bun-types": "^1.3.0",
+    "typescript": "^5.8.2"
+  }
+}
