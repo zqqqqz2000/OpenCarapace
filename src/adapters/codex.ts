@@ -3,6 +3,11 @@ import { BaseCodeAgentAdapter } from "./base.js";
 import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend.js";
 import { SdkAgentBackend } from "./backend.js";
 import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
+import {
+  normalizeSessionTitle,
+  type SessionTitleGenerationParams,
+  type SessionTitleGenerator,
+} from "../core/session-title.js";
 import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -190,6 +195,213 @@ function parseJsonLine(line: string): CodexJsonEvent | null {
     return parsed as CodexJsonEvent;
   } catch {
     return null;
+  }
+}
+
+function composeSessionTitlePrompt(firstUserPrompt: string): string {
+  return [
+    "System directives (must follow):",
+    "1. Thinking depth preference: low.",
+    "2. This is a one-shot title generation task.",
+    "3. Generate the best concise session title from the user's first question.",
+    "4. Output title text only, no explanation, no quotes, no markdown, no numbering.",
+    "5. Prefer readable Chinese title around 8-18 chars when input is Chinese.",
+    "",
+    "User request:",
+    firstUserPrompt.trim(),
+  ].join("\n");
+}
+
+async function runCodexSessionTitle(params: {
+  command: string;
+  baseArgs: string[];
+  model?: string;
+  firstUserPrompt: string;
+  abortSignal?: AbortSignal;
+}): Promise<string | undefined> {
+  if (params.abortSignal?.aborted) {
+    throw toTurnAbortedError(params.abortSignal.reason, "codex session title aborted before start");
+  }
+
+  const args = ["exec", "--json", ...params.baseArgs];
+  if (params.model && !hasModelOption(args)) {
+    args.push("--model", params.model);
+  }
+  if (!hasSandboxOption(args)) {
+    args.push("--sandbox", "read-only");
+  }
+  const prompt = composeSessionTitlePrompt(params.firstUserPrompt);
+  args.push(prompt);
+
+  const mergedEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+  };
+
+  return await new Promise<string | undefined>((resolve, reject) => {
+    const child = spawn(params.command, args, {
+      cwd: process.cwd(),
+      env: mergedEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let settled = false;
+    let stdoutRaw = "";
+    let stderr = "";
+    let lineBuffer = "";
+    const agentMessages: string[] = [];
+    let eventChain = Promise.resolve();
+    let abortListener: (() => void) | undefined;
+
+    const cleanup = () => {
+      if (abortListener) {
+        abortListener();
+        abortListener = undefined;
+      }
+    };
+
+    const safeReject = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const safeResolve = (title: string | undefined) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(title);
+    };
+
+    if (params.abortSignal) {
+      const onAbort = () => {
+        child.kill("SIGTERM");
+        safeReject(toTurnAbortedError(params.abortSignal?.reason, "codex session title aborted"));
+      };
+      if (params.abortSignal.aborted) {
+        onAbort();
+        return;
+      }
+      params.abortSignal.addEventListener("abort", onAbort, { once: true });
+      abortListener = () => {
+        params.abortSignal?.removeEventListener("abort", onAbort);
+      };
+    }
+
+    const handleLine = async (lineRaw: string): Promise<void> => {
+      const line = lineRaw.trim();
+      if (!line) {
+        return;
+      }
+      const event = parseJsonLine(line);
+      if (!event) {
+        return;
+      }
+      if (event.type !== "item.completed") {
+        return;
+      }
+      const item = event.item;
+      if (!isRecord(item)) {
+        return;
+      }
+      const itemType = typeof item.type === "string" ? item.type : "";
+      const itemText = typeof item.text === "string" ? item.text : "";
+      if (itemType !== "agent_message" || !itemText.trim()) {
+        return;
+      }
+      agentMessages.push(itemText.trim());
+    };
+
+    child.stdout.on("data", (chunk) => {
+      const text = String(chunk);
+      stdoutRaw += text;
+      lineBuffer += text;
+      while (true) {
+        const index = lineBuffer.indexOf("\n");
+        if (index < 0) {
+          break;
+        }
+        const line = lineBuffer.slice(0, index);
+        lineBuffer = lineBuffer.slice(index + 1);
+        eventChain = eventChain.then(async () => {
+          await handleLine(line);
+        });
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      safeReject(error);
+    });
+
+    child.on("close", async (code) => {
+      if (settled) {
+        return;
+      }
+      try {
+        if (lineBuffer.trim()) {
+          await handleLine(lineBuffer);
+        }
+        await eventChain;
+      } catch (error) {
+        safeReject(error);
+        return;
+      }
+
+      if (params.abortSignal?.aborted) {
+        safeReject(new TurnAbortedError("codex session title aborted"));
+        return;
+      }
+      if (code !== 0) {
+        safeReject(
+          new Error(
+            `codex session title failed (code=${code}): ${stderr.trim() || "unknown error"}`,
+          ),
+        );
+        return;
+      }
+
+      const rawTitle = agentMessages.join("\n").trim() || stdoutRaw.trim();
+      safeResolve(normalizeSessionTitle(rawTitle));
+    });
+
+    child.stdin.end();
+  });
+}
+
+class CodexSessionTitleGenerator implements SessionTitleGenerator {
+  constructor(
+    private readonly options: {
+      command: string;
+      baseArgs: string[];
+      model?: string;
+    },
+  ) {}
+
+  async generateTitle(params: SessionTitleGenerationParams): Promise<string | undefined> {
+    const request = {
+      command: this.options.command,
+      baseArgs: this.options.baseArgs,
+      firstUserPrompt: params.firstUserPrompt,
+      abortSignal: params.abortSignal,
+    } as {
+      command: string;
+      baseArgs: string[];
+      model?: string;
+      firstUserPrompt: string;
+      abortSignal?: AbortSignal;
+    };
+    if (this.options.model) {
+      request.model = this.options.model;
+    }
+    return await runCodexSessionTitle(request);
   }
 }
 
@@ -544,4 +756,29 @@ export function createCodexCliBackend(params?: {
     command,
     baseArgs,
   });
+}
+
+export function createCodexSessionTitleGenerator(params?: {
+  command?: string;
+  args?: string[];
+  model?: string;
+}): SessionTitleGenerator | null {
+  const command = params?.command?.trim();
+  if (!command) {
+    return null;
+  }
+  const baseArgs = normalizeBaseArgs((params?.args ?? []).map((part) => part.trim()).filter(Boolean));
+  const model = params?.model?.trim();
+  const options = {
+    command,
+    baseArgs,
+  } as {
+    command: string;
+    baseArgs: string[];
+    model?: string;
+  };
+  if (model) {
+    options.model = model;
+  }
+  return new CodexSessionTitleGenerator(options);
 }

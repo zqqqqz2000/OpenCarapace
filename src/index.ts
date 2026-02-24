@@ -1,7 +1,7 @@
 import path from "node:path";
 import { CloudCodeAgentAdapter, createCloudCodeCliBackend } from "./adapters/cloudcode.js";
 import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/claudecode.js";
-import { CodexAgentAdapter, createCodexCliBackend } from "./adapters/codex.js";
+import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex.js";
 import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory.js";
 import { ChannelGateway } from "./channels/gateway.js";
 import {
@@ -13,6 +13,7 @@ import {
 import { AgentRegistry } from "./core/agent.js";
 import { HookBus } from "./core/hooks.js";
 import { ChatOrchestrator } from "./core/orchestrator.js";
+import type { SessionTitleGenerator } from "./core/session-title.js";
 import { FileSessionStore } from "./core/session.js";
 import { SkillRuntime } from "./core/skills.js";
 import { ToolRuntime } from "./core/tools.js";
@@ -26,6 +27,7 @@ export * from "./core/abort.js";
 export * from "./core/hooks.js";
 export * from "./core/naming.js";
 export * from "./core/session.js";
+export * from "./core/session-title.js";
 export * from "./core/skills.js";
 export * from "./core/memory-skill.js";
 export * from "./core/commands.js";
@@ -104,6 +106,7 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
     maxChars: 800,
     maxLines: 12,
   });
+  let sessionTitleGenerator: SessionTitleGenerator | undefined;
 
   if (isEnabled(config.agents?.codex?.enabled, true)) {
     const codexArgsParams = {} as {
@@ -133,6 +136,16 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
 
     const codexCli = createCodexCliBackend(codexCliParams);
     registry.register(new CodexAgentAdapter(codexCli ? { backend: codexCli } : undefined));
+    const titleGeneratorParams = {
+      args: codexCliArgs,
+    } as {
+      command?: string;
+      args: string[];
+    };
+    if (command) {
+      titleGeneratorParams.command = command;
+    }
+    sessionTitleGenerator = createCodexSessionTitleGenerator(titleGeneratorParams) ?? undefined;
   }
   if (isEnabled(config.agents?.cloudcode?.enabled, false)) {
     const cloudcodeArgsParams = {} as {
@@ -216,7 +229,7 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
   const defaultAgentId =
     config.runtime?.default_agent_id?.trim() || config.channels?.routing?.default_agent_id?.trim() || "codex";
 
-  return new ChatOrchestrator({
+  const orchestratorDeps = {
     registry,
     hooks,
     skillRuntime: skills,
@@ -224,7 +237,20 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
     sessionStore: sessions,
     readabilityPolicy: readability,
     defaultAgentId,
-  });
+  } as {
+    registry: AgentRegistry;
+    hooks: HookBus;
+    skillRuntime: SkillRuntime;
+    toolRuntime: ToolRuntime;
+    sessionTitleGenerator?: SessionTitleGenerator;
+    sessionStore: FileSessionStore;
+    readabilityPolicy: ReadabilityPolicy;
+    defaultAgentId: string;
+  };
+  if (sessionTitleGenerator) {
+    orchestratorDeps.sessionTitleGenerator = sessionTitleGenerator;
+  }
+  return new ChatOrchestrator(orchestratorDeps);
 }
 
 export function createDefaultChannelGateway(options?: RuntimeBootstrapOptions & { orchestrator?: ChatOrchestrator }): ChannelGateway {

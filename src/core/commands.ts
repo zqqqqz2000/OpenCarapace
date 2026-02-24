@@ -1,7 +1,8 @@
 import type { AgentRegistry } from "./agent.js";
 import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
 import { MemorySkill } from "./memory-skill.js";
-import type { SessionManager } from "./session.js";
+import { buildFallbackSessionTitle } from "./session-title.js";
+import type { SessionManager, SessionRecord } from "./session.js";
 import type { SkillRuntime } from "./skills.js";
 import type { ToolRuntime } from "./tools.js";
 import type { AgentId } from "./types.js";
@@ -30,6 +31,52 @@ function parseNumber(value: string | undefined, fallback: number, min = 1, max =
     return fallback;
   }
   return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function formatRelativeShort(timestampMs: number, nowMs = Date.now()): string {
+  const diffMs = Math.max(0, nowMs - timestampMs);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  if (diffMs < minute) {
+    return "now";
+  }
+  if (diffMs < hour) {
+    return `${Math.floor(diffMs / minute)}m`;
+  }
+  if (diffMs < day) {
+    return `${Math.floor(diffMs / hour)}h`;
+  }
+  if (diffMs < week) {
+    return `${Math.floor(diffMs / day)}d`;
+  }
+  if (diffMs < month) {
+    return `${Math.floor(diffMs / week)}w`;
+  }
+  if (diffMs < year) {
+    return `${Math.floor(diffMs / month)}mo`;
+  }
+  return `${Math.floor(diffMs / year)}y`;
+}
+
+function resolveSessionDisplayName(session: SessionRecord): string {
+  const metadataName =
+    typeof session.metadata?.session_name === "string" && session.metadata.session_name.trim()
+      ? session.metadata.session_name.trim()
+      : "";
+  if (metadataName) {
+    return metadataName;
+  }
+
+  const firstUser = session.messages.find((message) => message.role === "user");
+  if (firstUser?.content?.trim()) {
+    return buildFallbackSessionTitle(firstUser.content.trim());
+  }
+  return session.id;
 }
 
 type ThinkingDepth = "low" | "medium" | "high";
@@ -156,6 +203,7 @@ export type ConversationCommandServiceDeps = {
   sessions: SessionManager;
   skills: SkillRuntime;
   tools?: ToolRuntime;
+  isSessionRunning?: (sessionId: string) => boolean;
 };
 
 export class ConversationCommandService {
@@ -217,6 +265,8 @@ export class ConversationCommandService {
         }
         this.deps.sessions.setMetadata(params.sessionId, next.agentId, {
           codex_thread_id: "",
+          session_name: "",
+          session_name_source: "",
         });
         return {
           handled: true,
@@ -386,8 +436,13 @@ export class ConversationCommandService {
       return "No sessions yet.";
     }
 
+    const nowMs = Date.now();
     const rows = sessions.slice(0, 20).map((session, index) => {
-      return `${index + 1}. ${session.id} | agent=${session.agentId} | messages=${session.messages.length}`;
+      const name = resolveSessionDisplayName(session);
+      const updated = formatRelativeShort(session.updatedAt, nowMs);
+      const running = this.deps.isSessionRunning?.(session.id) === true;
+      const marker = running ? "[RUNNING] " : "";
+      return `${index + 1}. ${marker}${name} | id=${session.id} | agent=${session.agentId} | updated=${updated} | messages=${session.messages.length}`;
     });
 
     return [`Sessions (${sessions.length})`, ...rows].join("\n");

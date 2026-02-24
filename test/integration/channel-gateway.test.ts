@@ -228,6 +228,34 @@ describe("ChannelGateway", () => {
     expect(adapter.sent.some((message) => message.text.includes("结果"))).toBeTrue();
   });
 
+  test("animates running message by editing progress text repeatedly", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const result = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-running-anim",
+      messageId: "anim-1",
+      text: "请执行一个慢任务并展示过程",
+    });
+
+    expect(result.finalText).toContain("done-1");
+    const spinnerEdits = adapter.edited
+      .map((message) => message.text)
+      .filter((text) => text.startsWith("⏳ ["));
+    expect(spinnerEdits.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(spinnerEdits).size).toBeGreaterThan(1);
+  });
+
   test("supports slash command messages through channel", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();
@@ -431,6 +459,40 @@ describe("ChannelGateway", () => {
     expect(statusReply).toBeDefined();
   });
 
+  test("marks running sessions in /sessions while a turn is active", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const runningTurn = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-running-sessions",
+      messageId: "run-1",
+      text: "慢任务进行中",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const sessionsTurn = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-running-sessions",
+      messageId: "run-2",
+      text: "/sessions",
+    });
+
+    expect(sessionsTurn.finalText).toContain("[RUNNING]");
+    expect(adapter.sent.some((message) => message.text.includes("[RUNNING]"))).toBeTrue();
+    await runningTurn;
+  });
+
   test("sends tail-preview plus full-text attachment for long telegram replies", async () => {
     const adapter = new CaptureChannelAdapter(220);
     const registry = new ChannelRegistry();
@@ -465,6 +527,9 @@ describe("ChannelGateway", () => {
 
     expect(adapter.files.length).toBe(1);
     const file = adapter.files[0];
+    if (!file) {
+      throw new Error("missing attachment");
+    }
     expect(file.fileName.endsWith(".txt")).toBeTrue();
     expect(typeof file.content).toBe("string");
     if (typeof file.content !== "string") {

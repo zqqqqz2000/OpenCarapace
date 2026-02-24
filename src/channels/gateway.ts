@@ -25,6 +25,8 @@ import type {
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
+const RUNNING_ANIMATION_INTERVAL_MS = 300;
+const RUNNING_ANIMATION_FRAMES = ["-", "\\", "|", "/"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -159,6 +161,11 @@ class ChannelTurnRelay {
   private readonly seenStatus = new Set<string>();
   private deltaBuffer = "";
   private lastProgressAt = 0;
+  private lastProgressText = "";
+  private lastRenderedProgress = "";
+  private animationFrameIndex = 0;
+  private animationTimer: ReturnType<typeof setInterval> | undefined;
+  private animationEditing = false;
 
   constructor(
     private readonly adapter: ChannelAdapter,
@@ -211,6 +218,10 @@ class ChannelTurnRelay {
     for (const chunk of chunks) {
       await this.sendText(chunk);
     }
+  }
+
+  dispose(): void {
+    this.stopProgressAnimation();
   }
 
   private async sendFullTextAttachment(fullText: string): Promise<void> {
@@ -292,28 +303,86 @@ class ChannelTurnRelay {
       return;
     }
     this.lastProgressAt = Date.now();
+    this.lastProgressText = normalized;
+    const rendered = this.renderProgressText(normalized);
 
     if (this.adapter.capabilities.supportsMessageEdit && this.progressMessageId && this.adapter.editMessage) {
-      const edit: ChannelEditMessage = {
-        channelId: this.adapter.id,
-        chatId: this.inbound.chatId,
-        messageId: this.progressMessageId,
-        text: `⏳ ${normalized}`,
-      };
-      if (this.inbound.accountId) {
-        edit.accountId = this.inbound.accountId;
-      }
-      if (this.inbound.threadId) {
-        edit.threadId = this.inbound.threadId;
-      }
-      await this.adapter.editMessage(edit);
+      await this.editProgressMessage(rendered);
+      this.startProgressAnimation();
       return;
     }
 
-    const sent = await this.sendText(`⏳ ${normalized}`);
+    const sent = await this.sendText(rendered);
+    this.lastRenderedProgress = rendered;
     if (this.adapter.capabilities.supportsMessageEdit && sent.messageId) {
       this.progressMessageId = sent.messageId;
+      this.startProgressAnimation();
     }
+  }
+
+  private renderProgressText(text: string): string {
+    const frame = RUNNING_ANIMATION_FRAMES[this.animationFrameIndex % RUNNING_ANIMATION_FRAMES.length] ?? "-";
+    return `⏳ [${frame}] ${text}`;
+  }
+
+  private startProgressAnimation(): void {
+    if (!this.adapter.capabilities.supportsMessageEdit || !this.adapter.editMessage || !this.progressMessageId) {
+      return;
+    }
+    if (this.animationTimer) {
+      return;
+    }
+    this.animationTimer = setInterval(() => {
+      void this.tickProgressAnimation();
+    }, RUNNING_ANIMATION_INTERVAL_MS);
+  }
+
+  private stopProgressAnimation(): void {
+    if (!this.animationTimer) {
+      return;
+    }
+    clearInterval(this.animationTimer);
+    this.animationTimer = undefined;
+    this.animationEditing = false;
+  }
+
+  private async tickProgressAnimation(): Promise<void> {
+    if (!this.lastProgressText || !this.progressMessageId || !this.adapter.editMessage) {
+      return;
+    }
+    if (this.animationEditing) {
+      return;
+    }
+    this.animationEditing = true;
+    try {
+      this.animationFrameIndex = (this.animationFrameIndex + 1) % RUNNING_ANIMATION_FRAMES.length;
+      await this.editProgressMessage(this.renderProgressText(this.lastProgressText));
+    } finally {
+      this.animationEditing = false;
+    }
+  }
+
+  private async editProgressMessage(text: string): Promise<void> {
+    if (!this.progressMessageId || !this.adapter.editMessage) {
+      return;
+    }
+    if (text === this.lastRenderedProgress) {
+      return;
+    }
+    const edit: ChannelEditMessage = {
+      channelId: this.adapter.id,
+      chatId: this.inbound.chatId,
+      messageId: this.progressMessageId,
+      text,
+    };
+    if (this.inbound.accountId) {
+      edit.accountId = this.inbound.accountId;
+    }
+    if (this.inbound.threadId) {
+      edit.threadId = this.inbound.threadId;
+    }
+    await this.adapter.editMessage(edit);
+    this.lastRenderedProgress = text;
   }
 
   private async sendText(text: string): Promise<{ messageId?: string }> {
@@ -468,6 +537,8 @@ export class ChannelGateway {
       }
       await channel.sendMessage(failure);
       throw error;
+    } finally {
+      relay.dispose();
     }
   }
 

@@ -467,7 +467,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
 
     const mimeType = attachment.mimeType?.trim() || "text/plain; charset=utf-8";
-    const blob = new Blob([attachment.content], { type: mimeType });
+    const contentPart: BlobPart =
+      typeof attachment.content === "string"
+        ? attachment.content
+        : new Uint8Array(attachment.content);
+    const blob = new Blob([contentPart], { type: mimeType });
     payload.set("document", blob, attachment.fileName || "opencarapace-attachment.txt");
 
     const response = await this.callMultipartApi<TelegramMessage>("sendDocument", payload);

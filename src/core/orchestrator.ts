@@ -6,6 +6,7 @@ import { isTurnAbortedError, toTurnAbortedError } from "./abort.js";
 import type { Skill } from "./skills.js";
 import { SkillRuntime } from "./skills.js";
 import { ToolRuntime } from "./tools.js";
+import { buildFallbackSessionTitle, normalizeSessionTitle, type SessionTitleGenerator } from "./session-title.js";
 import type { SessionStore } from "./session.js";
 import { InMemorySessionStore, SessionManager } from "./session.js";
 import {
@@ -47,6 +48,7 @@ export type ChatOrchestratorDeps = {
   skillRuntime?: SkillRuntime;
   toolRuntime?: ToolRuntime;
   hooks?: HookBus;
+  sessionTitleGenerator?: SessionTitleGenerator;
   sessionStore?: SessionStore;
   readabilityPolicy?: ReadabilityPolicy;
   commandService?: ConversationCommandService;
@@ -61,6 +63,7 @@ export class ChatOrchestrator {
   readonly sessions: SessionManager;
   readonly readability: ReadabilityPolicy;
   readonly commands: ConversationCommandService;
+  private readonly sessionTitleGenerator: SessionTitleGenerator | null;
 
   private readonly sessionChains = new Map<string, Promise<ChatTurnResult>>();
   private readonly runningTurns = new Map<string, AbortController>();
@@ -73,6 +76,7 @@ export class ChatOrchestrator {
     this.hooks = deps.hooks ?? new HookBus();
     this.sessions = new SessionManager(deps.sessionStore ?? new InMemorySessionStore());
     this.readability = deps.readabilityPolicy ?? new ReadabilityPolicy();
+    this.sessionTitleGenerator = deps.sessionTitleGenerator ?? null;
     this.defaultAgentId = deps.defaultAgentId ?? this.registry.list()[0]?.id ?? "codex";
     this.commands =
       deps.commandService ??
@@ -81,6 +85,7 @@ export class ChatOrchestrator {
         sessions: this.sessions,
         skills: this.skills,
         tools: this.tools,
+        isSessionRunning: (sessionId) => this.isTurnRunning(sessionId),
       });
   }
 
@@ -178,6 +183,12 @@ export class ChatOrchestrator {
       if (!snapshot) {
         throw new Error(`session not found after append: ${params.sessionId}`);
       }
+      this.maybeScheduleSessionTitle({
+        sessionId: params.sessionId,
+        agentId: currentAgentId,
+        prompt: params.input,
+        messages: snapshot.messages,
+      });
 
       const applicableSkills = this.skills.listApplicable(currentAgentId);
       const sessionMetadata = this.sessions.getMetadata(params.sessionId);
@@ -339,6 +350,58 @@ export class ChatOrchestrator {
 
     external.addEventListener("abort", onAbort, { once: true });
     return () => external.removeEventListener("abort", onAbort);
+  }
+
+  private maybeScheduleSessionTitle(params: {
+    sessionId: string;
+    agentId: AgentId;
+    prompt: string;
+    messages: ChatMessage[];
+  }): void {
+    const userMessages = params.messages.filter((message) => message.role === "user");
+    if (userMessages.length !== 1) {
+      return;
+    }
+    const metadata = this.sessions.getMetadata(params.sessionId);
+    const existingTitle =
+      typeof metadata.session_name === "string" && metadata.session_name.trim()
+        ? metadata.session_name.trim()
+        : "";
+    if (existingTitle) {
+      return;
+    }
+
+    const fallbackTitle = buildFallbackSessionTitle(params.prompt);
+    this.sessions.setMetadata(params.sessionId, params.agentId, {
+      session_name: fallbackTitle,
+      session_name_source: "fallback",
+    });
+    if (!this.sessionTitleGenerator) {
+      return;
+    }
+
+    void this.sessionTitleGenerator
+      .generateTitle({
+        sessionId: params.sessionId,
+        agentId: params.agentId,
+        firstUserPrompt: params.prompt,
+      })
+      .then((generated) => {
+        if (!generated) {
+          return;
+        }
+        const normalized = normalizeSessionTitle(generated);
+        if (!normalized) {
+          return;
+        }
+        this.sessions.setMetadata(params.sessionId, params.agentId, {
+          session_name: normalized,
+          session_name_source: "codex",
+        });
+      })
+      .catch(() => {
+        // best-effort naming: ignore transient title generation failures
+      });
   }
 
   private async emitCommandTurn(

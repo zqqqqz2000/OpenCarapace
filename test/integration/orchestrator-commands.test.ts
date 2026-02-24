@@ -90,4 +90,21 @@ describe("ChatOrchestrator commands", () => {
     expect(grep.finalText).toContain("Grep matches");
     expect(grep.finalText).toContain("package.json");
   });
+
+  test("shows readable session name and short relative updated time in /sessions", async () => {
+    const orchestrator = createDeterministicOrchestrator();
+
+    await orchestrator.chat({
+      sessionId: "cmd-sessions-name",
+      input: "帮我梳理支付超时与重试告警的排查步骤",
+    });
+
+    const sessions = await orchestrator.chat({
+      sessionId: "cmd-sessions-name",
+      input: "/sessions",
+    });
+    expect(sessions.finalText).toContain("Sessions (1)");
+    expect(sessions.finalText).toContain("帮我梳理支付超时与重试告警的排查步骤");
+    expect(sessions.finalText).toMatch(/updated=(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)/);
+  });
 });

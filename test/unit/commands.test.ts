@@ -13,7 +13,12 @@ import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills.js"
 import { createGrepWorkspaceTool } from "../../src/tools/grep-tool.js";
 import { createSkillLookupTool } from "../../src/tools/skill-tool.js";
 
-function createService(): ConversationCommandService {
+function createServiceBundle(options?: {
+  isSessionRunning?: (sessionId: string) => boolean;
+}): {
+  service: ConversationCommandService;
+  sessions: SessionManager;
+} {
   const registry = new AgentRegistry();
   registry.register(new CodexAgentAdapter());
   registry.register(new CloudCodeAgentAdapter());
@@ -59,12 +64,28 @@ function createService(): ConversationCommandService {
     }),
   );
 
-  return new ConversationCommandService({
+  const sessions = new SessionManager(new InMemorySessionStore());
+  const deps = {
     registry,
-    sessions: new SessionManager(new InMemorySessionStore()),
+    sessions,
     skills,
     tools,
-  });
+  } as {
+    registry: AgentRegistry;
+    sessions: SessionManager;
+    skills: SkillRuntime;
+    tools: ToolRuntime;
+    isSessionRunning?: (sessionId: string) => boolean;
+  };
+  if (options?.isSessionRunning) {
+    deps.isSessionRunning = options.isSessionRunning;
+  }
+  const service = new ConversationCommandService(deps);
+  return { service, sessions };
+}
+
+function createService(): ConversationCommandService {
+  return createServiceBundle().service;
 }
 
 describe("parseSlashCommand", () => {
@@ -221,5 +242,46 @@ describe("ConversationCommandService", () => {
     });
     expect(clearResult.handled).toBeTrue();
     expect(clearResult.finalText).toContain("Sandbox mode cleared");
+  });
+
+  test("formats /sessions with readable name and short relative time", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.appendMessage("s-sessions", "codex", {
+      role: "user",
+      content: "帮我排查支付超时和重试告警策略",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "s-sessions",
+      currentAgentId: "codex",
+      input: "/sessions",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Sessions (1)");
+    expect(result.finalText).toContain("帮我排查支付超时和重试告警策略");
+    expect(result.finalText).toContain("updated=");
+    expect(result.finalText).toMatch(/updated=(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)/);
+  });
+
+  test("marks running sessions in /sessions output", () => {
+    const { service, sessions } = createServiceBundle({
+      isSessionRunning: (sessionId) => sessionId === "s-running",
+    });
+    sessions.appendMessage("s-running", "codex", {
+      role: "user",
+      content: "请帮我检查一个运行中的任务",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "s-running",
+      currentAgentId: "codex",
+      input: "/sessions",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("[RUNNING]");
   });
 });
