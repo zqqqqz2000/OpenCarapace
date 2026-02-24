@@ -151,4 +151,49 @@ describe("ConversationCommandService", () => {
     expect(result.finalText).toContain("Skill matches");
     expect(result.finalText).toContain("Deploy Checklist");
   });
+
+  test("sets and clears model preference by /model", () => {
+    const service = createService();
+
+    const setResult = service.execute({
+      sessionId: "s-model",
+      currentAgentId: "codex",
+      input: "/model gpt-5",
+    });
+    expect(setResult.handled).toBeTrue();
+    expect(setResult.finalText).toContain("Model preference set.");
+
+    const showResult = service.execute({
+      sessionId: "s-model",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(showResult.finalText).toContain("- model: gpt-5");
+
+    const clearResult = service.execute({
+      sessionId: "s-model",
+      currentAgentId: "codex",
+      input: "/model clear",
+    });
+    expect(clearResult.finalText).toContain("Model preference cleared");
+  });
+
+  test("sets thinking depth by /depth", () => {
+    const service = createService();
+    const setResult = service.execute({
+      sessionId: "s-depth",
+      currentAgentId: "codex",
+      input: "/depth high",
+    });
+
+    expect(setResult.handled).toBeTrue();
+    expect(setResult.finalText).toContain("depth: high");
+
+    const status = service.execute({
+      sessionId: "s-depth",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(status.finalText).toContain("- thinkingDepth: high");
+  });
 });

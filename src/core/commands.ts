@@ -32,6 +32,25 @@ function parseNumber(value: string | undefined, fallback: number, min = 1, max =
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
+type ThinkingDepth = "low" | "medium" | "high";
+
+function normalizeThinkingDepth(value: string | undefined): ThinkingDepth | undefined {
+  const raw = (value ?? "").trim().toLowerCase();
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "low" || raw === "l" || raw === "1" || raw === "shallow") {
+    return "low";
+  }
+  if (raw === "medium" || raw === "mid" || raw === "m" || raw === "2" || raw === "normal") {
+    return "medium";
+  }
+  if (raw === "high" || raw === "h" || raw === "3" || raw === "deep") {
+    return "high";
+  }
+  return undefined;
+}
+
 function tokenizeCommandBody(body: string): string[] {
   const tokens: string[] = [];
   let current = "";
@@ -149,9 +168,21 @@ export class ConversationCommandService {
       case "new":
       case "reset": {
         const next = this.deps.sessions.reset(params.sessionId, params.currentAgentId);
+        const memory = this.getMemorySkill();
+        if (memory) {
+          memory.clearSession(params.sessionId);
+        }
+        this.deps.sessions.setMetadata(params.sessionId, next.agentId, {
+          codex_thread_id: "",
+        });
         return {
           handled: true,
-          finalText: `Session reset complete.\n- session: ${next.id}\n- agent: ${next.agentId}`,
+          finalText: [
+            "Session reset complete.",
+            `- session: ${next.id}`,
+            `- agent: ${next.agentId}`,
+            "- codexThread: cleared",
+          ].join("\n"),
           agentId: next.agentId,
         };
       }
@@ -179,6 +210,13 @@ export class ConversationCommandService {
       }
       case "agent": {
         return this.agentText(params.sessionId, params.currentAgentId, args[0]);
+      }
+      case "model": {
+        return this.modelText(params.sessionId, params.currentAgentId, args[0]);
+      }
+      case "depth":
+      case "thinking": {
+        return this.thinkingDepthText(params.sessionId, params.currentAgentId, args[0]);
       }
       case "skills": {
         return {
@@ -228,6 +266,8 @@ export class ConversationCommandService {
       "- /sessions: list recent sessions",
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/cloudcode/claude-code)",
+      "- /model [name|clear]: show or set model preference for current session",
+      "- /depth [low|medium|high|clear]: show or set thinking depth",
       "- /skills [catalog n]: list active skills or OpenClaw catalog skills",
       "- /tools: list enabled lightweight tools",
       "- /tool <name> [...args]: run tool by name (grep/skill)",
@@ -244,12 +284,26 @@ export class ConversationCommandService {
     const messageCount = session?.messages.length ?? 0;
     const updated = session ? new Date(session.updatedAt).toISOString() : "(new session)";
     const skills = this.deps.skills.listApplicable(currentAgentId);
+    const metadata = this.deps.sessions.getMetadata(sessionId);
+    const model =
+      typeof metadata.model === "string" && metadata.model.trim() ? metadata.model.trim() : "(default)";
+    const thinkingDepth =
+      typeof metadata.thinking_depth === "string" && metadata.thinking_depth.trim()
+        ? metadata.thinking_depth.trim()
+        : "(default)";
+    const codexThread =
+      typeof metadata.codex_thread_id === "string" && metadata.codex_thread_id.trim()
+        ? metadata.codex_thread_id.trim()
+        : "(none)";
     return [
       "Conversation status",
       `- session: ${sessionId}`,
       `- agent: ${currentAgentId}`,
       `- messages: ${messageCount}`,
       `- updatedAt: ${updated}`,
+      `- model: ${model}`,
+      `- thinkingDepth: ${thinkingDepth}`,
+      `- codexThread: ${codexThread}`,
       `- skills: ${skills.length}`,
       "Hint: use /help to see all commands.",
     ].join("\n");
@@ -287,11 +341,25 @@ export class ConversationCommandService {
 
   private sessionText(sessionId: string, currentAgentId: AgentId): string {
     const session = this.deps.sessions.snapshot(sessionId);
+    const metadata = this.deps.sessions.getMetadata(sessionId);
+    const model =
+      typeof metadata.model === "string" && metadata.model.trim() ? metadata.model.trim() : "(default)";
+    const thinkingDepth =
+      typeof metadata.thinking_depth === "string" && metadata.thinking_depth.trim()
+        ? metadata.thinking_depth.trim()
+        : "(default)";
+    const codexThread =
+      typeof metadata.codex_thread_id === "string" && metadata.codex_thread_id.trim()
+        ? metadata.codex_thread_id.trim()
+        : "(none)";
     if (!session) {
       return [
         "Current session",
         `- id: ${sessionId}`,
         `- agent: ${currentAgentId}`,
+        `- model: ${model}`,
+        `- thinkingDepth: ${thinkingDepth}`,
+        `- codexThread: ${codexThread}`,
         "- state: not initialized yet",
       ].join("\n");
     }
@@ -303,6 +371,9 @@ export class ConversationCommandService {
       `- createdAt: ${new Date(session.createdAt).toISOString()}`,
       `- updatedAt: ${new Date(session.updatedAt).toISOString()}`,
       `- messages: ${session.messages.length}`,
+      `- model: ${model}`,
+      `- thinkingDepth: ${thinkingDepth}`,
+      `- codexThread: ${codexThread}`,
     ].join("\n");
   }
 
@@ -344,6 +415,104 @@ export class ConversationCommandService {
         "Note: message history was reset for safety.",
       ].join("\n"),
       agentId: next.agentId,
+    };
+  }
+
+  private modelText(
+    sessionId: string,
+    currentAgentId: AgentId,
+    modelRaw: string | undefined,
+  ): CommandExecutionResult {
+    const current = this.deps.sessions.getMetadata(sessionId);
+    const currentModel =
+      typeof current.model === "string" && current.model.trim() ? current.model.trim() : "(default)";
+
+    if (!modelRaw) {
+      return {
+        handled: true,
+        finalText: [
+          "Model preference",
+          `- current: ${currentModel}`,
+          "Usage: /model <name> | /model clear",
+        ].join("\n"),
+        agentId: currentAgentId,
+      };
+    }
+
+    const model = modelRaw.trim();
+    if (!model) {
+      return {
+        handled: true,
+        finalText: "Usage: /model <name> | /model clear",
+        agentId: currentAgentId,
+      };
+    }
+
+    if (model.toLowerCase() === "clear" || model.toLowerCase() === "default") {
+      this.deps.sessions.setMetadata(sessionId, currentAgentId, { model: "" });
+      return {
+        handled: true,
+        finalText: `Model preference cleared for session ${sessionId}.`,
+        agentId: currentAgentId,
+      };
+    }
+
+    this.deps.sessions.setMetadata(sessionId, currentAgentId, { model });
+    return {
+      handled: true,
+      finalText: `Model preference set.\n- session: ${sessionId}\n- model: ${model}`,
+      agentId: currentAgentId,
+    };
+  }
+
+  private thinkingDepthText(
+    sessionId: string,
+    currentAgentId: AgentId,
+    depthRaw: string | undefined,
+  ): CommandExecutionResult {
+    const current = this.deps.sessions.getMetadata(sessionId);
+    const currentDepth =
+      typeof current.thinking_depth === "string" && current.thinking_depth.trim()
+        ? current.thinking_depth.trim()
+        : "(default)";
+
+    if (!depthRaw) {
+      return {
+        handled: true,
+        finalText: [
+          "Thinking depth preference",
+          `- current: ${currentDepth}`,
+          "Usage: /depth <low|medium|high> | /depth clear",
+        ].join("\n"),
+        agentId: currentAgentId,
+      };
+    }
+
+    const normalized = normalizeThinkingDepth(depthRaw);
+    if (!normalized) {
+      const raw = depthRaw.trim().toLowerCase();
+      if (raw === "clear" || raw === "default") {
+        this.deps.sessions.setMetadata(sessionId, currentAgentId, { thinking_depth: "" });
+        return {
+          handled: true,
+          finalText: `Thinking depth preference cleared for session ${sessionId}.`,
+          agentId: currentAgentId,
+        };
+      }
+      return {
+        handled: true,
+        finalText: "Invalid depth. Use: /depth low|medium|high|clear",
+        agentId: currentAgentId,
+      };
+    }
+
+    this.deps.sessions.setMetadata(sessionId, currentAgentId, {
+      thinking_depth: normalized,
+    });
+    return {
+      handled: true,
+      finalText: `Thinking depth set.\n- session: ${sessionId}\n- depth: ${normalized}`,
+      agentId: currentAgentId,
     };
   }
 

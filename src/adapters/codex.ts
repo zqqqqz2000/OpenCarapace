@@ -1,6 +1,304 @@
+import { spawn } from "node:child_process";
 import { BaseCodeAgentAdapter } from "./base.js";
-import { CliAgentBackend, type AgentBackend, SdkAgentBackend } from "./backend.js";
+import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend.js";
+import { SdkAgentBackend } from "./backend.js";
 import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeBaseArgs(args: string[]): string[] {
+  const normalized: string[] = [];
+  for (const raw of args) {
+    const arg = raw.trim();
+    if (!arg) {
+      continue;
+    }
+    if (arg === "{{prompt}}" || arg === "exec" || arg === "resume" || arg === "--json") {
+      continue;
+    }
+    normalized.push(arg);
+  }
+  return normalized;
+}
+
+function hasModelOption(args: string[]): boolean {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--model" || arg === "-m") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveSessionMetadata(request: BackendRunRequest): Record<string, unknown> {
+  if (!isRecord(request.metadata)) {
+    return {};
+  }
+  const session = request.metadata.session;
+  if (!isRecord(session)) {
+    return {};
+  }
+  return session;
+}
+
+function resolveSessionString(
+  sessionMetadata: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = sessionMetadata[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+type ThinkingDepth = "low" | "medium" | "high";
+
+function resolveThinkingDepth(sessionMetadata: Record<string, unknown>): ThinkingDepth | undefined {
+  const raw = resolveSessionString(sessionMetadata, "thinking_depth");
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "low" || raw === "medium" || raw === "high") {
+    return raw;
+  }
+  return undefined;
+}
+
+function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): string {
+  const sections: string[] = [];
+
+  if (request.systemDirectives.length > 0) {
+    const directives = request.systemDirectives
+      .map((directive, index) => `${index + 1}. ${directive.trim()}`)
+      .join("\n\n");
+    sections.push(
+      [
+        "System directives (must follow):",
+        directives,
+      ].join("\n"),
+    );
+  }
+
+  if (depth) {
+    sections.push(`Thinking depth preference: ${depth}. Keep user-visible output concise and actionable.`);
+  }
+
+  sections.push(["User request:", request.prompt].join("\n"));
+  return sections.join("\n\n").trim();
+}
+
+type CodexJsonEvent = {
+  type?: string;
+  [key: string]: unknown;
+};
+
+function parseJsonLine(line: string): CodexJsonEvent | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    return parsed as CodexJsonEvent;
+  } catch {
+    return null;
+  }
+}
+
+class CodexCliSessionBackend implements AgentBackend {
+  readonly mode = "cli" as const;
+
+  constructor(
+    private readonly options: {
+      command: string;
+      baseArgs: string[];
+    },
+  ) {}
+
+  async execute(request: BackendRunRequest, sink: AgentEventSink): Promise<BackendRunResult> {
+    const sessionMetadata = resolveSessionMetadata(request);
+    const previousThreadId = resolveSessionString(sessionMetadata, "codex_thread_id");
+    const preferredModel = resolveSessionString(sessionMetadata, "model");
+    const thinkingDepth = resolveThinkingDepth(sessionMetadata);
+    const prompt = composePrompt(request, thinkingDepth);
+
+    const args = ["exec", "--json", ...this.options.baseArgs];
+    if (preferredModel && !hasModelOption(args)) {
+      args.push("--model", preferredModel);
+    }
+    if (previousThreadId) {
+      args.push("resume", previousThreadId, prompt);
+    } else {
+      args.push(prompt);
+    }
+
+    const mergedEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+    };
+
+    return await new Promise<BackendRunResult>((resolve, reject) => {
+      const child = spawn(this.options.command, args, {
+        cwd: process.cwd(),
+        env: mergedEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdoutRaw = "";
+      let stderr = "";
+      let lineBuffer = "";
+      let threadId = previousThreadId;
+      let usage: unknown = undefined;
+      const agentMessages: string[] = [];
+      let reasoningNotified = false;
+      let eventChain = Promise.resolve();
+
+      const handleLine = async (lineRaw: string): Promise<void> => {
+        const line = lineRaw.trim();
+        if (!line) {
+          return;
+        }
+        const event = parseJsonLine(line);
+        if (!event) {
+          return;
+        }
+
+        const type = typeof event.type === "string" ? event.type : "";
+        if (type === "thread.started") {
+          const nextThreadId = typeof event.thread_id === "string" ? event.thread_id.trim() : "";
+          if (nextThreadId) {
+            threadId = nextThreadId;
+          }
+          return;
+        }
+
+        if (type === "turn.completed") {
+          if (event.usage !== undefined) {
+            usage = event.usage;
+          }
+          return;
+        }
+
+        if (type !== "item.completed") {
+          return;
+        }
+
+        const item = event.item;
+        if (!isRecord(item)) {
+          return;
+        }
+        const itemType = typeof item.type === "string" ? item.type : "";
+        const itemText = typeof item.text === "string" ? item.text : "";
+        if (!itemText.trim()) {
+          return;
+        }
+
+        if (itemType === "reasoning") {
+          if (!reasoningNotified) {
+            reasoningNotified = true;
+            await sink({
+              type: "command",
+              command: {
+                name: "progress",
+                payload: { text: "Codex 正在思考并执行中。" },
+              },
+              at: Date.now(),
+            });
+          }
+          return;
+        }
+
+        if (itemType === "agent_message") {
+          agentMessages.push(itemText);
+          await sink({
+            type: "delta",
+            text: itemText,
+            at: Date.now(),
+          });
+        }
+      };
+
+      child.stdout.on("data", (chunk) => {
+        const text = String(chunk);
+        stdoutRaw += text;
+        lineBuffer += text;
+
+        while (true) {
+          const index = lineBuffer.indexOf("\n");
+          if (index < 0) {
+            break;
+          }
+          const line = lineBuffer.slice(0, index);
+          lineBuffer = lineBuffer.slice(index + 1);
+          eventChain = eventChain.then(async () => {
+            await handleLine(line);
+          });
+        }
+      });
+
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+
+      child.on("error", (error) => {
+        reject(error);
+      });
+
+      child.on("close", async (code) => {
+        try {
+          if (lineBuffer.trim()) {
+            await handleLine(lineBuffer);
+          }
+          await eventChain;
+        } catch (error) {
+          reject(error);
+          return;
+        }
+
+        if (code !== 0) {
+          reject(
+            new Error(
+              `codex cli backend failed (code=${code}): ${stderr.trim() || "unknown error"}`,
+            ),
+          );
+          return;
+        }
+
+        const finalText = agentMessages.join("\n\n").trim();
+        const raw = {
+          stderr: stderr.trim(),
+          stdout: stdoutRaw.trim(),
+          code,
+          usage,
+          sessionMetadata: threadId
+            ? {
+                codex_thread_id: threadId,
+              }
+            : {},
+        } as {
+          stderr: string;
+          stdout: string;
+          code: number | null;
+          usage?: unknown;
+          sessionMetadata: Record<string, unknown>;
+        };
+
+        resolve({
+          finalText,
+          raw,
+        });
+      });
+
+      child.stdin.end();
+    });
+  }
+}
 
 export class DeterministicCodexBackend extends SdkAgentBackend {
   constructor() {
@@ -94,12 +392,10 @@ export function createCodexCliBackend(params?: {
     return null;
   }
 
-  const args = (params?.args ?? []).map((part) => part.trim()).filter(Boolean);
+  const baseArgs = normalizeBaseArgs((params?.args ?? []).map((part) => part.trim()).filter(Boolean));
 
-  return new CliAgentBackend({
+  return new CodexCliSessionBackend({
     command,
-    args,
-    promptMode: "arg",
-    promptArgToken: "{{prompt}}",
+    baseArgs,
   });
 }

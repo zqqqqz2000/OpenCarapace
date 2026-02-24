@@ -11,6 +11,7 @@
 - 轻量工具命令（`/tools`、`/grep`、`/skill`）
 - 运行中通知事件（`notify` / `progress` / `ask_user`）
 - 可读性策略（限制最终输出长度与结构）
+- Codex 原生多轮会话（首轮 `exec`，后续 `exec resume`，`/new` 重建会话）
 - 配置中心（`~/.config/opencarapace/config.toml`）
 - 单元 / 集成 / E2E 测试（当前重点覆盖 Codex）
 
@@ -204,6 +205,12 @@ body:
 - `/grep "<pattern>" [--path <dir-or-file>] [--limit <n>]`：grep/rg 搜索
 - `/skill [keywords]`：按关键词匹配技能
 - `/skill show <skill-id>`：查看技能摘要与片段
+
+常用会话命令补充：
+
+- `/new`：清空当前会话并清除当前 Codex thread 绑定（下一轮会新建）
+- `/model <name|clear>`：设置或清除当前会话的模型偏好
+- `/depth <low|medium|high|clear>`：设置或清除当前会话的思考深度偏好
 
 ## Docker
 

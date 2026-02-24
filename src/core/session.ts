@@ -123,6 +123,28 @@ export class SessionManager {
     return next;
   }
 
+  setMetadata(
+    sessionId: string,
+    agentId: AgentId,
+    patch: Record<string, unknown>,
+  ): SessionRecord {
+    const session = this.ensure(sessionId, agentId);
+    const next: SessionRecord = {
+      ...session,
+      metadata: {
+        ...(session.metadata ?? {}),
+        ...patch,
+      },
+      updatedAt: Date.now(),
+    };
+    this.store.save(next);
+    return next;
+  }
+
+  getMetadata(sessionId: string): Record<string, unknown> {
+    return { ...(this.store.get(sessionId)?.metadata ?? {}) };
+  }
+
   delete(sessionId: string): void {
     this.store.delete(sessionId);
   }

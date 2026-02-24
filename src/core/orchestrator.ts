@@ -21,6 +21,10 @@ function now(): number {
   return Date.now();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function userMessage(input: string): ChatMessage {
   return {
     role: "user",
@@ -150,6 +154,13 @@ export class ChatOrchestrator {
     }
 
     const applicableSkills = this.skills.listApplicable(currentAgentId);
+    const sessionMetadata = this.sessions.getMetadata(params.sessionId);
+    const mergedMetadata: Record<string, unknown> = {
+      ...(params.metadata ?? {}),
+    };
+    if (Object.keys(sessionMetadata).length > 0) {
+      mergedMetadata.session = sessionMetadata;
+    }
 
     const baseRequest = {
       agentId: currentAgentId,
@@ -159,8 +170,8 @@ export class ChatOrchestrator {
       systemDirectives: [],
       skills: this.skills.describe(applicableSkills),
     } as AgentTurnRequest;
-    if (params.metadata) {
-      baseRequest.metadata = params.metadata;
+    if (Object.keys(mergedMetadata).length > 0) {
+      baseRequest.metadata = mergedMetadata;
     }
 
     const skillPatch = await this.skills.runBeforeTurn(applicableSkills, baseRequest);
@@ -204,6 +215,10 @@ export class ChatOrchestrator {
     });
 
     const turn = await adapter.runTurn(request, emit);
+    const sessionMetadataPatch = this.extractSessionMetadataPatch(turn.raw);
+    if (sessionMetadataPatch) {
+      this.sessions.setMetadata(params.sessionId, currentAgentId, sessionMetadataPatch);
+    }
 
     await emit({
       type: "status",
@@ -284,5 +299,19 @@ export class ChatOrchestrator {
       finalText: normalized,
       events,
     };
+  }
+
+  private extractSessionMetadataPatch(raw: unknown): Record<string, unknown> | undefined {
+    if (!isRecord(raw)) {
+      return undefined;
+    }
+    const metadata = raw.sessionMetadata;
+    if (!isRecord(metadata)) {
+      return undefined;
+    }
+    if (Object.keys(metadata).length === 0) {
+      return undefined;
+    }
+    return metadata;
   }
 }
