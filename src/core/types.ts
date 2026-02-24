@@ -100,6 +100,7 @@ export type ChatTurnResult = {
   agentId: AgentId;
   sessionId: string;
   finalText: string;
+  rawFinalText?: string;
   events: AgentEvent[];
 };
 

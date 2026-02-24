@@ -7,6 +7,7 @@ import type {
   ChannelAdapter,
   ChannelAgentRouting,
   ChannelEditMessage,
+  ChannelFileAttachment,
   ChannelId,
   ChannelInboundHandler,
   ChannelInboundMessage,
@@ -24,6 +25,16 @@ function clipText(text: string, maxChars: number): string {
     return text.slice(0, Math.max(0, maxChars));
   }
   return `${text.slice(0, maxChars - 1)}…`;
+}
+
+function clipTextFromTop(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  if (maxChars <= 1) {
+    return text.slice(Math.max(0, text.length - maxChars));
+  }
+  return `…${text.slice(text.length - (maxChars - 1))}`;
 }
 
 function compactWhitespace(text: string): string {
@@ -126,10 +137,19 @@ class ChannelTurnRelay {
   async finalize(result: ChatTurnResult): Promise<void> {
     await this.flushDeltaPreview(true);
 
-    const chunks = splitOutboundText(
-      result.finalText,
-      Math.max(300, this.adapter.capabilities.maxMessageChars),
-    );
+    const maxChars = Math.max(300, this.adapter.capabilities.maxMessageChars);
+    const fullText = typeof result.rawFinalText === "string" ? result.rawFinalText.replace(/\r/g, "").trim() : "";
+    if (this.adapter.sendFile && fullText) {
+      if (fullText.length <= maxChars) {
+        await this.sendText(fullText);
+        return;
+      }
+      await this.sendText(clipTextFromTop(fullText, maxChars));
+      await this.sendFullTextAttachment(fullText);
+      return;
+    }
+
+    const chunks = splitOutboundText(result.finalText, maxChars);
     if (chunks.length === 0) {
       await this.sendText("暂无可读结果，请重试。");
       return;
@@ -138,6 +158,30 @@ class ChannelTurnRelay {
     for (const chunk of chunks) {
       await this.sendText(chunk);
     }
+  }
+
+  private async sendFullTextAttachment(fullText: string): Promise<void> {
+    if (!this.adapter.sendFile) {
+      return;
+    }
+    const attachment: ChannelFileAttachment = {
+      channelId: this.adapter.id,
+      chatId: this.inbound.chatId,
+      fileName: `opencarapace-full-response-${Date.now()}.txt`,
+      content: fullText,
+      mimeType: "text/plain; charset=utf-8",
+      caption: "完整版回复（文本附件）",
+    };
+    if (this.inbound.accountId) {
+      attachment.accountId = this.inbound.accountId;
+    }
+    if (this.inbound.threadId) {
+      attachment.threadId = this.inbound.threadId;
+    }
+    if (this.inbound.messageId) {
+      attachment.replyToMessageId = this.inbound.messageId;
+    }
+    await this.adapter.sendFile(attachment);
   }
 
   private async handleStatus(event: Extract<AgentEvent, { type: "status" }>): Promise<void> {

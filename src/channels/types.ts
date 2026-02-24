@@ -43,6 +43,19 @@ export type ChannelEditMessage = {
   metadata?: Record<string, unknown>;
 };
 
+export type ChannelFileAttachment = {
+  channelId: ChannelId;
+  accountId?: string;
+  chatId: string;
+  threadId?: string;
+  replyToMessageId?: string;
+  fileName: string;
+  content: string | Uint8Array;
+  mimeType?: string;
+  caption?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type ChannelSendReceipt = {
   messageId?: string;
   raw?: unknown;
@@ -66,6 +79,7 @@ export interface ChannelAdapter {
   stop?(): Promise<void>;
   sendMessage(message: ChannelOutboundMessage): Promise<ChannelSendReceipt>;
   editMessage?(message: ChannelEditMessage): Promise<ChannelSendReceipt>;
+  sendFile?(attachment: ChannelFileAttachment): Promise<ChannelSendReceipt>;
 }
 
 export type ChannelAgentRouting = {

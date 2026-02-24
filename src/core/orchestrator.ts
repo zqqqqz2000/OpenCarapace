@@ -285,6 +285,7 @@ export class ChatOrchestrator {
         agentId: currentAgentId,
         sessionId: params.sessionId,
         finalText: readable,
+        rawFinalText: turn.finalText,
         events,
       };
 
@@ -375,6 +376,7 @@ export class ChatOrchestrator {
       agentId,
       sessionId,
       finalText: normalized,
+      rawFinalText: normalized,
       events,
     };
   }

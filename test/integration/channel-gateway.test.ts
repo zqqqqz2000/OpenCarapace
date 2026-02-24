@@ -4,6 +4,7 @@ import { ChannelRegistry } from "../../src/channels/registry.js";
 import type {
   ChannelAdapter,
   ChannelEditMessage,
+  ChannelFileAttachment,
   ChannelOutboundMessage,
   ChannelSendReceipt,
 } from "../../src/channels/types.js";
@@ -22,16 +23,25 @@ import { createDeterministicOrchestrator } from "../support/orchestrator.js";
 class CaptureChannelAdapter implements ChannelAdapter {
   readonly id = "telegram";
   readonly displayName = "Capture";
-  readonly capabilities = {
-    supportsMessageEdit: true,
-    maxMessageChars: 4000,
-    supportsThreads: true,
+  readonly capabilities: {
+    supportsMessageEdit: true;
+    maxMessageChars: number;
+    supportsThreads: true;
   };
 
   readonly sent: ChannelOutboundMessage[] = [];
   readonly edited: ChannelEditMessage[] = [];
+  readonly files: ChannelFileAttachment[] = [];
 
   private nextId = 1;
+
+  constructor(maxMessageChars = 4000) {
+    this.capabilities = {
+      supportsMessageEdit: true,
+      maxMessageChars,
+      supportsThreads: true,
+    };
+  }
 
   async sendMessage(message: ChannelOutboundMessage): Promise<ChannelSendReceipt> {
     this.sent.push(message);
@@ -41,6 +51,11 @@ class CaptureChannelAdapter implements ChannelAdapter {
   async editMessage(message: ChannelEditMessage): Promise<ChannelSendReceipt> {
     this.edited.push(message);
     return { messageId: message.messageId };
+  }
+
+  async sendFile(attachment: ChannelFileAttachment): Promise<ChannelSendReceipt> {
+    this.files.push(attachment);
+    return { messageId: String(this.nextId++) };
   }
 }
 
@@ -99,6 +114,25 @@ class SlowAbortableCodexAdapter implements AgentAdapter {
   }
 }
 
+class LongCodexAdapter implements AgentAdapter {
+  readonly id = "codex";
+  readonly displayName = "LongCodex";
+  readonly capabilities = {
+    streaming: true,
+    transports: ["sdk"] as Array<"sdk" | "cli" | "hook">,
+    supportsCommands: true,
+    supportsMemoryHints: true,
+  };
+
+  constructor(private readonly finalText: string) {}
+
+  async runTurn(_request: AgentTurnRequest, _sink: AgentEventSink): Promise<AgentTurnResult> {
+    return {
+      finalText: this.finalText,
+    };
+  }
+}
+
 function createSlowOrchestrator(adapter: AgentAdapter): ChatOrchestrator {
   const registry = new AgentRegistry();
   registry.register(adapter);
@@ -111,6 +145,23 @@ function createSlowOrchestrator(adapter: AgentAdapter): ChatOrchestrator {
     readabilityPolicy: new ReadabilityPolicy({
       maxChars: 800,
       maxLines: 12,
+    }),
+    defaultAgentId: "codex",
+  });
+}
+
+function createLongOutputOrchestrator(finalText: string): ChatOrchestrator {
+  const registry = new AgentRegistry();
+  registry.register(new LongCodexAdapter(finalText));
+  return new ChatOrchestrator({
+    registry,
+    hooks: new HookBus(),
+    skillRuntime: new SkillRuntime(),
+    toolRuntime: new ToolRuntime(),
+    sessionStore: new InMemorySessionStore(),
+    readabilityPolicy: new ReadabilityPolicy({
+      maxChars: 140,
+      maxLines: 4,
     }),
     defaultAgentId: "codex",
   });
@@ -245,5 +296,48 @@ describe("ChannelGateway", () => {
     await runningTurn;
     const statusReply = adapter.sent.find((message) => message.text.includes("Conversation status"));
     expect(statusReply).toBeDefined();
+  });
+
+  test("sends tail-preview plus full-text attachment for long telegram replies", async () => {
+    const adapter = new CaptureChannelAdapter(220);
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const longText = Array.from(
+      { length: 100 },
+      (_, index) => `${index + 1}. line-${index + 1} long output block for telegram attachment test.`,
+    ).join("\n");
+
+    const gateway = new ChannelGateway({
+      orchestrator: createLongOutputOrchestrator(longText),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-long",
+      messageId: "901",
+      text: "请返回完整结果",
+    });
+
+    const finals = adapter.sent.filter((message) => !message.text.startsWith("⏳"));
+    expect(finals.length).toBeGreaterThan(0);
+    const preview = finals[finals.length - 1]?.text ?? "";
+    expect(preview.startsWith("…")).toBeTrue();
+    expect(preview).toContain("line-100");
+    expect(preview).not.toContain("line-1 long");
+    expect(preview.length).toBeLessThanOrEqual(300);
+
+    expect(adapter.files.length).toBe(1);
+    const file = adapter.files[0];
+    expect(file.fileName.endsWith(".txt")).toBeTrue();
+    expect(typeof file.content).toBe("string");
+    if (typeof file.content !== "string") {
+      throw new Error("expected string attachment content");
+    }
+    expect(file.content).toBe(longText);
+    expect(file.caption).toContain("完整版");
   });
 });

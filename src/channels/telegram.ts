@@ -6,6 +6,7 @@ import type {
   ChannelAdapter,
   ChannelCapabilities,
   ChannelEditMessage,
+  ChannelFileAttachment,
   ChannelInboundHandler,
   ChannelInboundMessage,
   ChannelOutboundMessage,
@@ -400,6 +401,43 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     return receipt;
   }
 
+  async sendFile(attachment: ChannelFileAttachment): Promise<ChannelSendReceipt> {
+    const payload = new FormData();
+    payload.set("chat_id", attachment.chatId);
+
+    const replyTo = normalizeOptionalInt(attachment.replyToMessageId);
+    if (replyTo !== undefined) {
+      payload.set("reply_to_message_id", String(replyTo));
+    }
+
+    const threadId = normalizeOptionalInt(attachment.threadId);
+    if (threadId !== undefined) {
+      payload.set("message_thread_id", String(threadId));
+    }
+
+    const caption = attachment.caption?.trim();
+    if (caption) {
+      payload.set(
+        "caption",
+        caption.length > 1024 ? `${caption.slice(0, 1023)}…` : caption,
+      );
+    }
+
+    const mimeType = attachment.mimeType?.trim() || "text/plain; charset=utf-8";
+    const blob = new Blob([attachment.content], { type: mimeType });
+    payload.set("document", blob, attachment.fileName || "opencarapace-attachment.txt");
+
+    const response = await this.callMultipartApi<TelegramMessage>("sendDocument", payload);
+    const receipt: ChannelSendReceipt = {
+      raw: response,
+    };
+    const messageId = normalizeOptionalString(response.message_id);
+    if (messageId) {
+      receipt.messageId = messageId;
+    }
+    return receipt;
+  }
+
   private async runPollLoop(handler: ChannelInboundHandler, signal: AbortSignal): Promise<void> {
     while (this.running && !signal.aborted) {
       try {
@@ -609,11 +647,34 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       throw new Error(`telegram api request failed (${method}): status=${response.status}`);
     }
     const json = (await response.json()) as TelegramApiEnvelope<T>;
-    if (!json.ok || json.result === undefined) {
+    return this.unwrapEnvelope(method, json);
+  }
+
+  private async callMultipartApi<T>(
+    method: string,
+    payload: FormData,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const url = `${this.apiBaseUrl}/bot${this.token}/${method}`;
+    const response = await fetch(url, {
+      method: "POST",
+      body: payload,
+      signal: signal ?? null,
+    });
+
+    if (!response.ok) {
+      throw new Error(`telegram api request failed (${method}): status=${response.status}`);
+    }
+    const json = (await response.json()) as TelegramApiEnvelope<T>;
+    return this.unwrapEnvelope(method, json);
+  }
+
+  private unwrapEnvelope<T>(method: string, envelope: TelegramApiEnvelope<T>): T {
+    if (!envelope.ok || envelope.result === undefined) {
       throw new Error(
-        `telegram api response failed (${method}): ${json.description || "unknown error"}`,
+        `telegram api response failed (${method}): ${envelope.description || "unknown error"}`,
       );
     }
-    return json.result;
+    return envelope.result;
   }
 }
