@@ -33,6 +33,203 @@ function parseNumber(value: string | undefined, fallback: number, min = 1, max =
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type UsageMetric = {
+  key: string;
+  path: string;
+  value: unknown;
+};
+
+function toFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.replace(/,/g, "");
+  const percent = normalized.endsWith("%") ? normalized.slice(0, -1) : normalized;
+  const n = Number(percent);
+  if (!Number.isFinite(n)) {
+    return undefined;
+  }
+  return n;
+}
+
+function formatPercent(value: number): string {
+  const normalized = Math.max(0, value);
+  const fixed = normalized.toFixed(1);
+  return `${fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed}%`;
+}
+
+function formatCount(value: number): string {
+  const rounded = Math.round(value);
+  return String(rounded);
+}
+
+function collectUsageMetrics(input: unknown, path: string, out: UsageMetric[]): void {
+  if (Array.isArray(input)) {
+    for (let index = 0; index < input.length; index += 1) {
+      collectUsageMetrics(input[index], `${path}[${index}]`, out);
+    }
+    return;
+  }
+  if (!isRecord(input)) {
+    return;
+  }
+  for (const [rawKey, value] of Object.entries(input)) {
+    const key = rawKey.trim();
+    if (!key) {
+      continue;
+    }
+    const nextPath = path ? `${path}.${key}` : key;
+    if (Array.isArray(value) || isRecord(value)) {
+      collectUsageMetrics(value, nextPath, out);
+      continue;
+    }
+    out.push({
+      key: key.toLowerCase(),
+      path: nextPath.toLowerCase(),
+      value,
+    });
+  }
+}
+
+function pickMetricNumber(metrics: UsageMetric[], predicate: (metric: UsageMetric) => boolean): number | undefined {
+  for (const metric of metrics) {
+    if (!predicate(metric)) {
+      continue;
+    }
+    const n = toFiniteNumber(metric.value);
+    if (n === undefined) {
+      continue;
+    }
+    return n;
+  }
+  return undefined;
+}
+
+function formatCodexContextUsage(usage: unknown): string {
+  if (!isRecord(usage) && !Array.isArray(usage)) {
+    return "(unavailable)";
+  }
+  const metrics: UsageMetric[] = [];
+  collectUsageMetrics(usage, "usage", metrics);
+  if (metrics.length === 0) {
+    return "(unavailable)";
+  }
+
+  const directPercent = pickMetricNumber(
+    metrics,
+    (metric) =>
+      /(context.*(ratio|percent|pct|utili)|context_?(usage|use)_?ratio)/.test(metric.key),
+  );
+  const used = pickMetricNumber(
+    metrics,
+    (metric) =>
+      /(^input_tokens$|^prompt_tokens$|^input_token_count$|context.*(used|usage|consumed)|used_context)/.test(
+        metric.key,
+      ),
+  );
+  const limit = pickMetricNumber(
+    metrics,
+    (metric) =>
+      /(context.*(window|max|limit|total|size)|max_context_tokens|max_input_tokens|input_token_limit|context_window_tokens|token_limit)/.test(
+        metric.key,
+      ) && !/(week|weekly|5h|hour|day|month|year)/.test(metric.path),
+  );
+
+  let percent: number | undefined;
+  if (directPercent !== undefined) {
+    percent = directPercent <= 1 ? directPercent * 100 : directPercent;
+  } else if (used !== undefined && limit !== undefined && limit > 0) {
+    percent = (used / limit) * 100;
+  }
+
+  if (percent === undefined) {
+    return "(unavailable)";
+  }
+  if (used !== undefined && limit !== undefined && limit > 0) {
+    return `${formatPercent(percent)} (${formatCount(used)}/${formatCount(limit)})`;
+  }
+  return formatPercent(percent);
+}
+
+type CodexQuotaWindow = "5h" | "week";
+
+function metricMatchesWindow(metric: UsageMetric, window: CodexQuotaWindow): boolean {
+  const target = `${metric.path} ${metric.key}`;
+  if (window === "5h") {
+    return (
+      target.includes("5h") ||
+      target.includes("5-hour") ||
+      target.includes("5hour") ||
+      target.includes("5_hr") ||
+      target.includes("five hour") ||
+      target.includes("five-hour") ||
+      target.includes("five_hour") ||
+      target.includes("300m")
+    );
+  }
+  return (
+    target.includes("week") ||
+    target.includes("weekly") ||
+    target.includes("7d") ||
+    target.includes("7-day") ||
+    target.includes("7day")
+  );
+}
+
+function formatCodexQuotaUsage(usage: unknown, window: CodexQuotaWindow): string {
+  if (!isRecord(usage) && !Array.isArray(usage)) {
+    return "(unavailable)";
+  }
+  const metrics: UsageMetric[] = [];
+  collectUsageMetrics(usage, "usage", metrics);
+  if (metrics.length === 0) {
+    return "(unavailable)";
+  }
+
+  const scoped = metrics.filter((metric) => metricMatchesWindow(metric, window));
+  if (scoped.length === 0) {
+    return "(unavailable)";
+  }
+
+  const used = pickMetricNumber(
+    scoped,
+    (metric) => /(used|usage|consumed|spent|spend)/.test(metric.key),
+  );
+  const limit = pickMetricNumber(
+    scoped,
+    (metric) =>
+      /(limit|max|quota|cap|total)/.test(metric.key) &&
+      !/(used|usage|consumed|spent|spend)/.test(metric.key) &&
+      !/(remaining|left|available|reset|renew|next)/.test(metric.key),
+  );
+  const remaining = pickMetricNumber(
+    scoped,
+    (metric) => /(remaining|left|available)/.test(metric.key),
+  );
+
+  if (used !== undefined && limit !== undefined && limit > 0) {
+    return `${formatCount(used)}/${formatCount(limit)} (${formatPercent((used / limit) * 100)})`;
+  }
+  if (remaining !== undefined && limit !== undefined && limit > 0) {
+    return `${formatCount(remaining)}/${formatCount(limit)} left`;
+  }
+  if (used !== undefined) {
+    return `${formatCount(used)} used`;
+  }
+  return "(unavailable)";
+}
+
 function formatRelativeShort(timestampMs: number, nowMs = Date.now()): string {
   const diffMs = Math.max(0, nowMs - timestampMs);
   const minute = 60 * 1000;
@@ -77,6 +274,17 @@ function resolveSessionDisplayName(session: SessionRecord): string {
     return buildFallbackSessionTitle(firstUser.content.trim());
   }
   return session.id;
+}
+
+function clipSessionListName(name: string, maxChars = 24): string {
+  const normalized = name.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "New Session";
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
 }
 
 type ThinkingDepth = "low" | "medium" | "high";
@@ -175,6 +383,15 @@ function tokenizeCommandBody(body: string): string[] {
   return tokens;
 }
 
+function normalizeSlashCommandName(head: string): string {
+  const lower = head.toLowerCase();
+  const atIndex = lower.indexOf("@");
+  if (atIndex <= 0) {
+    return lower;
+  }
+  return lower.slice(0, atIndex);
+}
+
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) {
@@ -192,7 +409,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   }
 
   return {
-    name: head.toLowerCase(),
+    name: normalizeSlashCommandName(head),
     args,
     raw: trimmed,
   };
@@ -404,6 +621,10 @@ export class ConversationCommandService {
       typeof metadata.codex_thread_id === "string" && metadata.codex_thread_id.trim()
         ? metadata.codex_thread_id.trim()
         : "(none)";
+    const codexUsage = metadata.codex_usage_snapshot;
+    const codexContext = formatCodexContextUsage(codexUsage);
+    const codexQuota5h = formatCodexQuotaUsage(codexUsage, "5h");
+    const codexQuotaWeek = formatCodexQuotaUsage(codexUsage, "week");
     return [
       "Conversation status",
       `- session: ${sessionId}`,
@@ -414,6 +635,9 @@ export class ConversationCommandService {
       `- thinkingDepth: ${thinkingDepth}`,
       `- sandbox: ${sandboxMode}`,
       `- codexThread: ${codexThread}`,
+      `- codexContextUsage: ${codexContext}`,
+      `- codexQuota5h: ${codexQuota5h}`,
+      `- codexQuotaWeek: ${codexQuotaWeek}`,
       `- skills: ${skills.length}`,
       "Hint: use /help to see all commands.",
     ].join("\n");
@@ -467,11 +691,11 @@ export class ConversationCommandService {
 
     const nowMs = Date.now();
     const rows = sessions.slice(0, 20).map((session, index) => {
-      const name = resolveSessionDisplayName(session);
+      const name = clipSessionListName(resolveSessionDisplayName(session));
       const updated = formatRelativeShort(session.updatedAt, nowMs);
       const running = this.deps.isSessionRunning?.(session.id) === true;
-      const marker = running ? "[RUNNING] " : "";
-      return `${index + 1}. ${marker}${name} | id=${session.id} | agent=${session.agentId} | updated=${updated} | messages=${session.messages.length}`;
+      const marker = running ? "⟳ " : "";
+      return `${index + 1}. ${marker}${name} ${updated} <${session.agentId}> x${session.messages.length}`;
     });
 
     return [`Sessions (${sessions.length})`, ...rows].join("\n");

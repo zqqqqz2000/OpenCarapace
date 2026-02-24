@@ -635,16 +635,21 @@ class CodexCliSessionBackend implements AgentBackend {
         }
 
         const finalText = agentMessages.join("\n\n").trim();
+        const sessionMetadata: Record<string, unknown> = threadId
+          ? {
+              codex_thread_id: threadId,
+            }
+          : {};
+        if (usage !== undefined) {
+          sessionMetadata.codex_usage_snapshot = usage;
+        }
+
         const raw = {
           stderr: stderr.trim(),
           stdout: stdoutRaw.trim(),
           code,
           usage,
-          sessionMetadata: threadId
-            ? {
-                codex_thread_id: threadId,
-              }
-            : {},
+          sessionMetadata,
         } as {
           stderr: string;
           stdout: string;

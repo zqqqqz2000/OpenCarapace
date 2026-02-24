@@ -105,6 +105,6 @@ describe("ChatOrchestrator commands", () => {
     });
     expect(sessions.finalText).toContain("Sessions (1)");
     expect(sessions.finalText).toContain("帮我梳理支付超时与重试告警的排查步骤");
-    expect(sessions.finalText).toMatch(/updated=(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)/);
+    expect(sessions.finalText).toMatch(/1\.\s.+\s(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)\s<codex>\sx2/);
   });
 });

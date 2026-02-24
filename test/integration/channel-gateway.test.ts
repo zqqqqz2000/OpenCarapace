@@ -21,9 +21,12 @@ import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
 import {
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_TOKEN,
+  TURN_RUNNING_STOP_CALLBACK,
   parseTurnDecisionCallbackData,
 } from "../../src/channels/turn-decision.js";
 import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+
+const RUNNING_EMOJI_PREFIX = /^(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)\s/;
 
 class CaptureChannelAdapter implements ChannelAdapter {
   readonly id = "telegram";
@@ -201,6 +204,36 @@ function findTurnDecisionCallback(
   throw new Error(`missing callback token for action=${action}`);
 }
 
+function findLatestTurnDecisionCallback(
+  messages: ChannelOutboundMessage[],
+  action: "steer" | "stack",
+): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData) {
+          continue;
+        }
+        const parsed = parseTurnDecisionCallbackData(callbackData);
+        if (parsed && parsed.action === action) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error(`missing latest callback token for action=${action}`);
+}
+
 describe("ChannelGateway", () => {
   test("sends progress updates and final text during long turn", async () => {
     const adapter = new CaptureChannelAdapter();
@@ -224,7 +257,25 @@ describe("ChannelGateway", () => {
 
     expect(result.finalText.length).toBeGreaterThan(0);
     expect(adapter.edited.length).toBeGreaterThan(0);
-    expect(adapter.sent.some((message) => message.text.includes("⏳"))).toBeTrue();
+    expect(adapter.sent.some((message) => RUNNING_EMOJI_PREFIX.test(message.text))).toBeTrue();
+    expect(
+      adapter.sent.some((message) => {
+        if (!RUNNING_EMOJI_PREFIX.test(message.text)) {
+          return false;
+        }
+        const metadata = message.metadata as
+          | {
+              telegram_reply_markup?: {
+                inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+              };
+            }
+          | undefined;
+        const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+        return rows.some((row) =>
+          row.some((button) => button.callback_data === TURN_RUNNING_STOP_CALLBACK),
+        );
+      }),
+    ).toBeTrue();
     expect(adapter.sent.some((message) => message.text.includes("结果"))).toBeTrue();
   });
 
@@ -251,7 +302,7 @@ describe("ChannelGateway", () => {
     expect(result.finalText).toContain("done-1");
     const spinnerEdits = adapter.edited
       .map((message) => message.text)
-      .filter((text) => text.startsWith("⏳ ["));
+      .filter((text) => RUNNING_EMOJI_PREFIX.test(text));
     expect(spinnerEdits.length).toBeGreaterThanOrEqual(2);
     expect(new Set(spinnerEdits).size).toBeGreaterThan(1);
   });
@@ -277,6 +328,7 @@ describe("ChannelGateway", () => {
     });
 
     expect(adapter.sent.some((message) => message.text.includes("Available commands"))).toBeTrue();
+    expect(adapter.edited.length).toBe(0);
   });
 
   test("shows steer/stack choices when new non-command input arrives during a running turn", async () => {
@@ -419,6 +471,87 @@ describe("ChannelGateway", () => {
     expect(adapter.sent.some((message) => message.text.includes("已选择 2. stack"))).toBeTrue();
   });
 
+  test("shows ordered stacked queue items after multiple stack selections", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const firstPromise = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack-ordered",
+      messageId: "210",
+      text: "慢任务先跑",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const queuedA = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack-ordered",
+      messageId: "211",
+      text: "后续排队任务A",
+    });
+    expect(queuedA.finalText).toBe("");
+
+    const stackTokenA = findLatestTurnDecisionCallback(adapter.sent, "stack");
+    const stackedAPromise = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack-ordered",
+      messageId: "212",
+      text: "/turn-decision",
+      metadata: {
+        [TURN_DECISION_META_ACTION]: "stack",
+        [TURN_DECISION_META_TOKEN]: stackTokenA,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const queuedB = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack-ordered",
+      messageId: "213",
+      text: "后续排队任务B",
+    });
+    expect(queuedB.finalText).toBe("");
+
+    const stackTokenB = findLatestTurnDecisionCallback(adapter.sent, "stack");
+    const stackedBPromise = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stack-ordered",
+      messageId: "214",
+      text: "/turn-decision",
+      metadata: {
+        [TURN_DECISION_META_ACTION]: "stack",
+        [TURN_DECISION_META_TOKEN]: stackTokenB,
+      },
+    });
+
+    const firstResult = await firstPromise;
+    const stackedAResult = await stackedAPromise;
+    const stackedBResult = await stackedBPromise;
+
+    expect(firstResult.finalText).toContain("done-1");
+    expect(stackedAResult.finalText).toContain("done-2");
+    expect(stackedBResult.finalText).toContain("done-3");
+    expect(
+      adapter.sent.some(
+        (message) =>
+          message.text.includes("当前队列（按顺序）") &&
+          message.text.includes("1. 后续排队任务A") &&
+          message.text.includes("2. 后续排队任务B"),
+      ),
+    ).toBeTrue();
+  });
+
   test("runs slash commands in parallel while a non-command turn is running", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();
@@ -523,8 +656,8 @@ describe("ChannelGateway", () => {
       text: "/sessions",
     });
 
-    expect(sessionsTurn.finalText).toContain("[RUNNING]");
-    expect(adapter.sent.some((message) => message.text.includes("[RUNNING]"))).toBeTrue();
+    expect(sessionsTurn.finalText).toContain("⟳ ");
+    expect(adapter.sent.some((message) => message.text.includes("⟳ "))).toBeTrue();
     await runningTurn;
   });
 
@@ -552,7 +685,7 @@ describe("ChannelGateway", () => {
       text: "请返回完整结果",
     });
 
-    const finals = adapter.sent.filter((message) => !message.text.startsWith("⏳"));
+    const finals = adapter.sent.filter((message) => !RUNNING_EMOJI_PREFIX.test(message.text));
     expect(finals.length).toBeGreaterThan(0);
     const preview = finals[finals.length - 1]?.text ?? "";
     expect(preview.startsWith("…")).toBeTrue();

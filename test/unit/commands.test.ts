@@ -111,6 +111,10 @@ describe("parseSlashCommand", () => {
   test("returns null for non command input", () => {
     expect(parseSlashCommand("hello")).toBeNull();
   });
+
+  test("normalizes telegram command mention suffix", () => {
+    expect(parseSlashCommand("/status@OpenCarapaceBot")?.name).toBe("status");
+  });
 });
 
 describe("ConversationCommandService", () => {
@@ -249,6 +253,31 @@ describe("ConversationCommandService", () => {
     expect(clearResult.finalText).toContain("Sandbox mode cleared");
   });
 
+  test("shows codex context usage and quota windows in /status when usage is available", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.setMetadata("s-usage", "codex", {
+      codex_usage_snapshot: {
+        context_used_tokens: 1200,
+        context_window_tokens: 4000,
+        quota_5h_used: 30,
+        quota_5h_limit: 100,
+        week_used: 120,
+        week_limit: 700,
+      },
+    });
+
+    const status = service.execute({
+      sessionId: "s-usage",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+
+    expect(status.handled).toBeTrue();
+    expect(status.finalText).toContain("- codexContextUsage: 30% (1200/4000)");
+    expect(status.finalText).toContain("- codexQuota5h: 30/100 (30%)");
+    expect(status.finalText).toContain("- codexQuotaWeek: 120/700 (17.1%)");
+  });
+
   test("stops running turn by /stop", () => {
     let cancelCalls = 0;
     const service = createServiceBundle({
@@ -297,8 +326,7 @@ describe("ConversationCommandService", () => {
     expect(result.handled).toBeTrue();
     expect(result.finalText).toContain("Sessions (1)");
     expect(result.finalText).toContain("帮我排查支付超时和重试告警策略");
-    expect(result.finalText).toContain("updated=");
-    expect(result.finalText).toMatch(/updated=(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)/);
+    expect(result.finalText).toMatch(/1\.\s.+\s(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)\s<codex>\sx1/);
   });
 
   test("marks running sessions in /sessions output", () => {
@@ -318,6 +346,23 @@ describe("ConversationCommandService", () => {
     });
 
     expect(result.handled).toBeTrue();
-    expect(result.finalText).toContain("[RUNNING]");
+    expect(result.finalText).toContain("⟳ ");
+  });
+
+  test("clips overly long session name in /sessions output", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.appendMessage("s-long-name", "codex", {
+      role: "user",
+      content: "这是一个非常非常非常非常非常长的会话标题用于测试截断是否生效",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "s-long-name",
+      currentAgentId: "codex",
+      input: "/sessions",
+    });
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("…");
   });
 });

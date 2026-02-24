@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseTurnDecisionCallbackData, TURN_DECISION_META_ACTION, TURN_DECISION_META_TOKEN } from "./turn-decision.js";
+import {
+  isTurnRunningStopCallbackData,
+  parseTurnDecisionCallbackData,
+  TURN_DECISION_META_ACTION,
+  TURN_DECISION_META_TOKEN,
+} from "./turn-decision.js";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -449,12 +454,29 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       text: message.text,
       disable_web_page_preview: true,
     };
+    const parseMode = resolveTelegramParseMode(message.metadata);
+    if (parseMode) {
+      payload.parse_mode = parseMode;
+    }
+    const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
+    if (replyMarkup) {
+      payload.reply_markup = replyMarkup;
+    }
     const threadId = normalizeOptionalInt(message.threadId);
     if (threadId !== undefined) {
       payload.message_thread_id = threadId;
     }
 
-    const response = await this.callApi<TelegramMessage>("editMessageText", payload);
+    let response: TelegramMessage | undefined;
+    try {
+      response = await this.callApi<TelegramMessage>("editMessageText", payload);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (/message is not modified/i.test(reason)) {
+        return {};
+      }
+      throw error;
+    }
     const receipt: ChannelSendReceipt = {
       raw: response,
     };
@@ -518,27 +540,30 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
 
     const decision = parseTurnDecisionCallbackData(rawData);
-    if (!decision) {
-      await this.answerCallbackQuery(callbackId);
+    const stopRequested = isTurnRunningStopCallbackData(rawData);
+    if (!decision && !stopRequested) {
+      this.acknowledgeCallbackQuery(callbackId);
       return;
     }
 
     const chatId = String(message.chat.id);
     if (this.allowedChatIds && !this.allowedChatIds.has(chatId)) {
-      await this.answerCallbackQuery(callbackId);
+      this.acknowledgeCallbackQuery(callbackId);
       return;
     }
 
     const inbound: ChannelInboundMessage = {
       channelId: this.id,
       chatId,
-      text: "/turn-decision",
+      text: stopRequested ? "/stop" : "/turn-decision",
       raw: callbackQuery,
-      metadata: {
+    };
+    if (decision) {
+      inbound.metadata = {
         [TURN_DECISION_META_ACTION]: decision.action,
         [TURN_DECISION_META_TOKEN]: decision.token,
-      },
-    };
+      };
+    }
 
     const senderId = normalizeOptionalString(callbackQuery.from?.id);
     if (senderId) {
@@ -561,12 +586,18 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       inbound.replyToMessageId = replyToMessageId;
     }
 
-    await this.answerCallbackQuery(
+    this.acknowledgeCallbackQuery(
       callbackId,
-      decision.action === "steer" ? "已选择 steer" : "已选择 stack",
+      stopRequested ? "已请求 stop" : decision?.action === "steer" ? "已选择 steer" : "已选择 stack",
     );
     void handler(inbound).catch(() => {
       // Isolate per-message handler failures from polling loop.
+    });
+  }
+
+  private acknowledgeCallbackQuery(callbackId: string, text?: string): void {
+    void this.answerCallbackQuery(callbackId, text).catch(() => {
+      // Best-effort acknowledgement.
     });
   }
 
@@ -578,11 +609,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (normalized) {
       payload.text = normalized;
     }
-    try {
-      await this.callApi<boolean>("answerCallbackQuery", payload);
-    } catch {
-      // Best-effort acknowledgement.
-    }
+    await this.callApi<boolean>("answerCallbackQuery", payload);
   }
 
   private async runPollLoop(handler: ChannelInboundHandler, signal: AbortSignal): Promise<void> {
@@ -593,7 +620,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           this.offset = Math.max(this.offset, update.update_id + 1);
           const callbackQuery = update.callback_query;
           if (callbackQuery) {
-            await this.handleCallbackQuery(callbackQuery, handler);
+            void this.handleCallbackQuery(callbackQuery, handler).catch(() => {
+              // Isolate callback handling failures from polling loop.
+            });
             continue;
           }
           const message = update.message ?? update.edited_message;

@@ -155,6 +155,16 @@ describe("Codex resume-only conversation flow", () => {
 
     const metadata = orchestrator.sessions.getMetadata("s-resume");
     expect(metadata.codex_thread_id).toBe("thread-2");
+    expect(typeof metadata.codex_usage_snapshot).toBe("object");
+    if (
+      !metadata.codex_usage_snapshot ||
+      typeof metadata.codex_usage_snapshot !== "object" ||
+      Array.isArray(metadata.codex_usage_snapshot)
+    ) {
+      throw new Error("missing codex usage snapshot");
+    }
+    const usage = metadata.codex_usage_snapshot as Record<string, unknown>;
+    expect(usage.input_tokens).toBe(1);
   });
 
   test("persists codex thread binding across orchestrator restart with file session store", async () => {

@@ -10,6 +10,7 @@ import {
   TURN_DECISION_META_BYPASS,
   TURN_DECISION_META_FORCE_STEER,
   TURN_DECISION_META_TOKEN,
+  TURN_RUNNING_STOP_CALLBACK,
   buildTurnDecisionCallbackData,
 } from "./turn-decision.js";
 import type {
@@ -25,8 +26,17 @@ import type {
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
-const RUNNING_ANIMATION_INTERVAL_MS = 300;
-const RUNNING_ANIMATION_FRAMES = ["-", "\\", "|", "/"] as const;
+const RUNNING_ANIMATION_INTERVAL_MS = 500;
+const RUNNING_ANIMATION_FRAMES = [
+  "🌑",
+  "🌒",
+  "🌓",
+  "🌔",
+  "🌕",
+  "🌖",
+  "🌗",
+  "🌘",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,7 +73,10 @@ function splitOutboundText(text: string, maxChars: number): string[] {
     return [];
   }
 
-  const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
   const chunks: string[] = [];
   let current = "";
 
@@ -98,7 +111,9 @@ function splitOutboundText(text: string, maxChars: number): string[] {
   return chunks;
 }
 
-function resolveCommandText(event: Extract<AgentEvent, { type: "command" }>): string | undefined {
+function resolveCommandText(
+  event: Extract<AgentEvent, { type: "command" }>,
+): string | undefined {
   const payloadText = event.command.payload.text;
   if (typeof payloadText === "string") {
     return payloadText.trim();
@@ -128,7 +143,11 @@ function readTurnDecisionSelection(
   }
   const action = metadata[TURN_DECISION_META_ACTION];
   const token = metadata[TURN_DECISION_META_TOKEN];
-  if ((action === "steer" || action === "stack") && typeof token === "string" && token.trim()) {
+  if (
+    (action === "steer" || action === "stack") &&
+    typeof token === "string" &&
+    token.trim()
+  ) {
     return {
       action,
       token: token.trim(),
@@ -142,7 +161,9 @@ function shouldBypassTurnDecision(metadata: unknown): boolean {
 }
 
 function shouldForceSteer(metadata: unknown): boolean {
-  return isRecord(metadata) && metadata[TURN_DECISION_META_FORCE_STEER] === true;
+  return (
+    isRecord(metadata) && metadata[TURN_DECISION_META_FORCE_STEER] === true
+  );
 }
 
 type TurnRelayOptions = {
@@ -156,6 +177,11 @@ type PendingTurnDecision = {
   createdAt: number;
 };
 
+type StackedQueueEntry = {
+  id: string;
+  preview: string;
+};
+
 class ChannelTurnRelay {
   private progressMessageId: string | undefined;
   private readonly seenStatus = new Set<string>();
@@ -166,26 +192,39 @@ class ChannelTurnRelay {
   private animationFrameIndex = 0;
   private animationTimer: ReturnType<typeof setInterval> | undefined;
   private animationEditing = false;
+  private progressChain: Promise<void> = Promise.resolve();
+  private closed = false;
+  private readonly animationEnabled: boolean;
 
   constructor(
     private readonly adapter: ChannelAdapter,
     private readonly inbound: ChannelInboundMessage,
     private readonly options: TurnRelayOptions = {},
-  ) {}
+  ) {
+    this.animationEnabled = !looksLikeSlashCommand(inbound.text);
+  }
 
   async onEvent(event: AgentEvent): Promise<void> {
     switch (event.type) {
       case "status":
-        await this.handleStatus(event);
+        this.enqueueProgressWork(async () => {
+          await this.handleStatus(event);
+        });
         return;
       case "command":
-        await this.handleCommand(event);
+        this.enqueueProgressWork(async () => {
+          await this.handleCommand(event);
+        });
         return;
       case "delta":
-        await this.handleDelta(event.text);
+        this.enqueueProgressWork(async () => {
+          await this.handleDelta(event.text);
+        });
         return;
       case "error":
-        await this.sendProgress(`任务执行出错：${event.error}`);
+        this.enqueueProgressWork(async () => {
+          await this.sendProgress(`任务执行出错：${event.error}`);
+        });
         return;
       case "result":
         return;
@@ -195,10 +234,15 @@ class ChannelTurnRelay {
   }
 
   async finalize(result: ChatTurnResult): Promise<void> {
+    this.stopProgressAnimation();
+    this.closed = true;
     await this.flushDeltaPreview(true);
 
     const maxChars = Math.max(300, this.adapter.capabilities.maxMessageChars);
-    const fullText = typeof result.rawFinalText === "string" ? result.rawFinalText.replace(/\r/g, "").trim() : "";
+    const fullText =
+      typeof result.rawFinalText === "string"
+        ? result.rawFinalText.replace(/\r/g, "").trim()
+        : "";
     if (this.adapter.sendFile && fullText) {
       if (fullText.length <= maxChars) {
         await this.sendText(fullText);
@@ -221,7 +265,23 @@ class ChannelTurnRelay {
   }
 
   dispose(): void {
+    this.closed = true;
     this.stopProgressAnimation();
+  }
+
+  private enqueueProgressWork(work: () => Promise<void>): void {
+    if (this.closed) {
+      return;
+    }
+    const run = async () => {
+      if (this.closed) {
+        return;
+      }
+      await work();
+    };
+    this.progressChain = this.progressChain.then(run, run).catch(() => {
+      // Keep progress pipeline resilient on transport failures.
+    });
   }
 
   private async sendFullTextAttachment(fullText: string): Promise<void> {
@@ -248,7 +308,9 @@ class ChannelTurnRelay {
     await this.adapter.sendFile(attachment);
   }
 
-  private async handleStatus(event: Extract<AgentEvent, { type: "status" }>): Promise<void> {
+  private async handleStatus(
+    event: Extract<AgentEvent, { type: "status" }>,
+  ): Promise<void> {
     // Keep status notifications short and avoid repeatedly spamming the same phase.
     if (this.seenStatus.has(event.phase)) {
       return;
@@ -260,7 +322,9 @@ class ChannelTurnRelay {
     await this.sendProgress(event.message);
   }
 
-  private async handleCommand(event: Extract<AgentEvent, { type: "command" }>): Promise<void> {
+  private async handleCommand(
+    event: Extract<AgentEvent, { type: "command" }>,
+  ): Promise<void> {
     if (event.command.name !== "progress" && event.command.name !== "notify") {
       return;
     }
@@ -285,13 +349,15 @@ class ChannelTurnRelay {
       return;
     }
 
-    const throttleMs = this.options.progressThrottleMs ?? DEFAULT_PROGRESS_THROTTLE_MS;
+    const throttleMs =
+      this.options.progressThrottleMs ?? DEFAULT_PROGRESS_THROTTLE_MS;
     const now = Date.now();
     if (!force && now - this.lastProgressAt < throttleMs) {
       return;
     }
 
-    const maxChars = this.options.deltaPreviewMaxChars ?? DEFAULT_DELTA_PREVIEW_MAX_CHARS;
+    const maxChars =
+      this.options.deltaPreviewMaxChars ?? DEFAULT_DELTA_PREVIEW_MAX_CHARS;
     const preview = clipText(this.deltaBuffer, maxChars);
     this.deltaBuffer = "";
     await this.sendProgress(`处理中：${preview}`);
@@ -306,13 +372,18 @@ class ChannelTurnRelay {
     this.lastProgressText = normalized;
     const rendered = this.renderProgressText(normalized);
 
-    if (this.adapter.capabilities.supportsMessageEdit && this.progressMessageId && this.adapter.editMessage) {
+    if (
+      this.animationEnabled &&
+      this.adapter.capabilities.supportsMessageEdit &&
+      this.progressMessageId &&
+      this.adapter.editMessage
+    ) {
       await this.editProgressMessage(rendered);
       this.startProgressAnimation();
       return;
     }
 
-    const sent = await this.sendText(rendered);
+    const sent = await this.sendText(rendered, this.runningControlMetadata());
     this.lastRenderedProgress = rendered;
     if (this.adapter.capabilities.supportsMessageEdit && sent.messageId) {
       this.progressMessageId = sent.messageId;
@@ -321,12 +392,22 @@ class ChannelTurnRelay {
   }
 
   private renderProgressText(text: string): string {
-    const frame = RUNNING_ANIMATION_FRAMES[this.animationFrameIndex % RUNNING_ANIMATION_FRAMES.length] ?? "-";
-    return `⏳ [${frame}] ${text}`;
+    const frame =
+      RUNNING_ANIMATION_FRAMES[
+        this.animationFrameIndex % RUNNING_ANIMATION_FRAMES.length
+      ] ?? "🌑";
+    return `${frame} ${text}`;
   }
 
   private startProgressAnimation(): void {
-    if (!this.adapter.capabilities.supportsMessageEdit || !this.adapter.editMessage || !this.progressMessageId) {
+    if (!this.animationEnabled) {
+      return;
+    }
+    if (
+      !this.adapter.capabilities.supportsMessageEdit ||
+      !this.adapter.editMessage ||
+      !this.progressMessageId
+    ) {
       return;
     }
     if (this.animationTimer) {
@@ -347,7 +428,11 @@ class ChannelTurnRelay {
   }
 
   private async tickProgressAnimation(): Promise<void> {
-    if (!this.lastProgressText || !this.progressMessageId || !this.adapter.editMessage) {
+    if (
+      !this.lastProgressText ||
+      !this.progressMessageId ||
+      !this.adapter.editMessage
+    ) {
       return;
     }
     if (this.animationEditing) {
@@ -355,8 +440,11 @@ class ChannelTurnRelay {
     }
     this.animationEditing = true;
     try {
-      this.animationFrameIndex = (this.animationFrameIndex + 1) % RUNNING_ANIMATION_FRAMES.length;
-      await this.editProgressMessage(this.renderProgressText(this.lastProgressText));
+      this.animationFrameIndex =
+        (this.animationFrameIndex + 1) % RUNNING_ANIMATION_FRAMES.length;
+      await this.editProgressMessage(
+        this.renderProgressText(this.lastProgressText),
+      );
     } finally {
       this.animationEditing = false;
     }
@@ -381,16 +469,47 @@ class ChannelTurnRelay {
     if (this.inbound.threadId) {
       edit.threadId = this.inbound.threadId;
     }
+    const metadata = this.runningControlMetadata();
+    if (metadata) {
+      edit.metadata = metadata;
+    }
     await this.adapter.editMessage(edit);
     this.lastRenderedProgress = text;
   }
 
-  private async sendText(text: string): Promise<{ messageId?: string }> {
+  private runningControlMetadata(): Record<string, unknown> | undefined {
+    if (!this.animationEnabled) {
+      return undefined;
+    }
+    if (this.adapter.id !== "telegram") {
+      return undefined;
+    }
+    return {
+      telegram_reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "🛑 Stop",
+              callback_data: TURN_RUNNING_STOP_CALLBACK,
+            },
+          ],
+        ],
+      },
+    };
+  }
+
+  private async sendText(
+    text: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<{ messageId?: string }> {
     const outbound: ChannelOutboundMessage = {
       channelId: this.adapter.id,
       chatId: this.inbound.chatId,
       text,
     };
+    if (metadata) {
+      outbound.metadata = metadata;
+    }
     if (this.inbound.accountId) {
       outbound.accountId = this.inbound.accountId;
     }
@@ -414,7 +533,11 @@ export class ChannelGateway {
   readonly orchestrator: ChatOrchestrator;
   readonly registry: ChannelRegistry;
   readonly routing: ChannelAgentRouting;
-  private readonly pendingTurnDecisions = new Map<string, PendingTurnDecision>();
+  private readonly pendingTurnDecisions = new Map<
+    string,
+    PendingTurnDecision
+  >();
+  private readonly stackedTurnQueues = new Map<string, StackedQueueEntry[]>();
 
   constructor(deps: ChannelGatewayDeps) {
     this.orchestrator = deps.orchestrator;
@@ -462,13 +585,20 @@ export class ChannelGateway {
       });
     }
 
-    if (this.pendingTurnDecisions.has(sessionId) && !this.orchestrator.isTurnRunning(sessionId)) {
+    if (
+      this.pendingTurnDecisions.has(sessionId) &&
+      !this.orchestrator.isTurnRunning(sessionId)
+    ) {
       this.pendingTurnDecisions.delete(sessionId);
     }
 
     const bypassTurnDecision = shouldBypassTurnDecision(message.metadata);
     const isCommandMessage = looksLikeSlashCommand(message.text);
-    if (!isCommandMessage && this.orchestrator.isTurnRunning(sessionId) && !bypassTurnDecision) {
+    if (
+      !isCommandMessage &&
+      this.orchestrator.isTurnRunning(sessionId) &&
+      !bypassTurnDecision
+    ) {
       await this.promptTurnDecision(channel, message, sessionId);
       return this.emptyTurnResult(agentId, sessionId);
     }
@@ -573,14 +703,6 @@ export class ChannelGateway {
 
     this.pendingTurnDecisions.delete(params.sessionId);
     const forceSteer = params.selection.action === "steer";
-    await this.sendAuxiliaryMessage(
-      params.channel,
-      params.message,
-      forceSteer
-        ? "已选择 1. steer：正在中断当前任务并切换到新消息。"
-        : "已选择 2. stack：新消息已进入队列。",
-    );
-
     const replayMetadata = cloneMetadata(pending.inbound.metadata);
     replayMetadata[TURN_DECISION_META_BYPASS] = true;
     replayMetadata[TURN_DECISION_META_FORCE_STEER] = forceSteer;
@@ -588,7 +710,26 @@ export class ChannelGateway {
       ...pending.inbound,
       metadata: replayMetadata,
     };
-    return await this.handleInbound(replay);
+    if (forceSteer) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "已选择 1. steer：正在中断当前任务并切换到新消息。",
+      );
+      return await this.handleInbound(replay);
+    }
+
+    const queued = this.enqueueStackedTurn(params.sessionId, pending.inbound.text);
+    try {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        this.formatStackQueueMessage(queued.snapshot),
+      );
+      return await this.handleInbound(replay);
+    } finally {
+      this.dequeueStackedTurn(params.sessionId, queued.entryId);
+    }
   }
 
   private async promptTurnDecision(
@@ -662,6 +803,45 @@ export class ChannelGateway {
       outbound.replyToMessageId = inbound.messageId;
     }
     await channel.sendMessage(outbound);
+  }
+
+  private enqueueStackedTurn(
+    sessionId: string,
+    text: string,
+  ): { entryId: string; snapshot: string[] } {
+    const queue = this.stackedTurnQueues.get(sessionId) ?? [];
+    const entry: StackedQueueEntry = {
+      id: randomUUID(),
+      preview: clipText(compactWhitespace(text), 80),
+    };
+    queue.push(entry);
+    this.stackedTurnQueues.set(sessionId, queue);
+    return {
+      entryId: entry.id,
+      snapshot: queue.map((item) => item.preview),
+    };
+  }
+
+  private dequeueStackedTurn(sessionId: string, entryId: string): void {
+    const queue = this.stackedTurnQueues.get(sessionId);
+    if (!queue || queue.length === 0) {
+      return;
+    }
+    const next = queue.filter((item) => item.id !== entryId);
+    if (next.length === 0) {
+      this.stackedTurnQueues.delete(sessionId);
+      return;
+    }
+    this.stackedTurnQueues.set(sessionId, next);
+  }
+
+  private formatStackQueueMessage(queuePreviews: string[]): string {
+    const rows = queuePreviews.map((item, index) => `${index + 1}. ${item}`);
+    return [
+      "已选择 2. stack：新消息已进入队列。",
+      "当前队列（按顺序）：",
+      ...rows,
+    ].join("\n");
   }
 
   private emptyTurnResult(agentId: AgentId, sessionId: string): ChatTurnResult {
