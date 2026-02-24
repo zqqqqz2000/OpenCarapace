@@ -193,4 +193,32 @@ describe("Codex resume-only conversation flow", () => {
     const resumeThread = secondCall[secondCall.indexOf("resume") + 1];
     expect(resumeThread).toBe("thread-1");
   });
+
+  test("passes sandbox mode from /sandbox command into codex cli args", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-codex-sandbox-"));
+    const scriptPath = path.join(root, "fake-codex.mjs");
+    const callLogPath = path.join(root, "calls.json");
+    const counterPath = path.join(root, "counter.txt");
+    createFakeCodexScript({ scriptPath, callLogPath, counterPath });
+
+    const orchestrator = createOrchestratorWithFakeCodex(scriptPath);
+    await orchestrator.chat({
+      sessionId: "s-sandbox",
+      agentId: "codex",
+      input: "/sandbox workspace-write",
+    });
+
+    await orchestrator.chat({
+      sessionId: "s-sandbox",
+      agentId: "codex",
+      input: "run with sandbox",
+    });
+
+    const calls = JSON.parse(fs.readFileSync(callLogPath, "utf-8")) as string[][];
+    expect(calls.length).toBe(1);
+    const call = calls[0] ?? [];
+    expect(call.includes("--sandbox")).toBeTrue();
+    const sandboxValue = call[call.indexOf("--sandbox") + 1];
+    expect(sandboxValue).toBe("workspace-write");
+  });
 });

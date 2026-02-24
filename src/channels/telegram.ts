@@ -18,6 +18,11 @@ type TelegramApiEnvelope<T> = {
   description?: string;
 };
 
+type TelegramBotCommand = {
+  command: string;
+  description: string;
+};
+
 type TelegramChat = {
   id: number;
   type: "private" | "group" | "supergroup" | "channel";
@@ -38,6 +43,14 @@ type TelegramPhotoSize = {
   file_size?: number;
 };
 
+type TelegramMediaFile = {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  mime_type?: string;
+  file_name?: string;
+};
+
 type TelegramFile = {
   file_id: string;
   file_unique_id: string;
@@ -50,11 +63,42 @@ type TelegramMessage = {
   text?: string;
   caption?: string;
   photo?: TelegramPhotoSize[];
+  voice?: TelegramMediaFile;
+  audio?: TelegramMediaFile;
+  document?: TelegramMediaFile;
+  video?: TelegramMediaFile;
+  video_note?: TelegramMediaFile;
+  animation?: TelegramMediaFile;
+  sticker?: TelegramMediaFile;
   chat: TelegramChat;
   from?: TelegramUser;
   reply_to_message?: {
     message_id: number;
   };
+};
+
+type TelegramAttachmentKind =
+  | "photo"
+  | "voice"
+  | "audio"
+  | "document"
+  | "video"
+  | "video_note"
+  | "animation"
+  | "sticker";
+
+type TelegramAttachmentCandidate = {
+  kind: TelegramAttachmentKind;
+  fileId: string;
+  defaultExt: string;
+  isImage: boolean;
+};
+
+type DownloadedTelegramAttachments = {
+  attachmentPaths: string[];
+  imagePaths: string[];
+  kinds: TelegramAttachmentKind[];
+  errors: string[];
 };
 
 type TelegramUpdate = {
@@ -106,8 +150,8 @@ function resolveInboundText(message: TelegramMessage): string {
     return caption;
   }
 
-  if (message.photo?.length) {
-    return "请基于附带图片进行处理。";
+  if (hasAttachment(message)) {
+    return "请基于附带附件进行处理。";
   }
 
   return "";
@@ -129,6 +173,123 @@ function pickLargestPhoto(photos: TelegramPhotoSize[]): TelegramPhotoSize | unde
   }
   return best;
 }
+
+function pushAttachmentCandidate(
+  output: TelegramAttachmentCandidate[],
+  seen: Set<string>,
+  params: {
+    kind: TelegramAttachmentKind;
+    fileId: string | undefined;
+    defaultExt: string;
+    isImage: boolean;
+  },
+): void {
+  const fileId = params.fileId?.trim();
+  if (!fileId || seen.has(fileId)) {
+    return;
+  }
+  seen.add(fileId);
+  output.push({
+    kind: params.kind,
+    fileId,
+    defaultExt: params.defaultExt,
+    isImage: params.isImage,
+  });
+}
+
+function resolveAttachmentCandidates(message: TelegramMessage): TelegramAttachmentCandidate[] {
+  const candidates: TelegramAttachmentCandidate[] = [];
+  const seen = new Set<string>();
+
+  const photo = message.photo?.length ? pickLargestPhoto(message.photo) : undefined;
+  if (photo) {
+    pushAttachmentCandidate(candidates, seen, {
+      kind: "photo",
+      fileId: photo.file_id,
+      defaultExt: ".jpg",
+      isImage: true,
+    });
+  }
+
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "voice",
+    fileId: message.voice?.file_id,
+    defaultExt: ".ogg",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "audio",
+    fileId: message.audio?.file_id,
+    defaultExt: ".mp3",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "document",
+    fileId: message.document?.file_id,
+    defaultExt: ".bin",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "video",
+    fileId: message.video?.file_id,
+    defaultExt: ".mp4",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "video_note",
+    fileId: message.video_note?.file_id,
+    defaultExt: ".mp4",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "animation",
+    fileId: message.animation?.file_id,
+    defaultExt: ".mp4",
+    isImage: false,
+  });
+  pushAttachmentCandidate(candidates, seen, {
+    kind: "sticker",
+    fileId: message.sticker?.file_id,
+    defaultExt: ".webp",
+    isImage: true,
+  });
+
+  return candidates;
+}
+
+function hasAttachment(message: TelegramMessage): boolean {
+  return resolveAttachmentCandidates(message).length > 0;
+}
+
+function normalizeExtensionCandidate(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^\.[a-z0-9]{1,9}$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
+  { command: "help", description: "Show available commands" },
+  { command: "status", description: "Show current session status" },
+  { command: "new", description: "Reset current session and start new turn chain" },
+  { command: "history", description: "Show recent messages in this session" },
+  { command: "session", description: "Show current session metadata" },
+  { command: "sessions", description: "List recent sessions" },
+  { command: "agent", description: "Show or switch current agent" },
+  { command: "model", description: "Show or set model preference" },
+  { command: "depth", description: "Show or set thinking depth" },
+  { command: "sandbox", description: "Set codex sandbox mode for this session" },
+  { command: "memory", description: "Show or clear memory entries" },
+  { command: "tools", description: "List available tools" },
+  { command: "grep", description: "Search workspace text by keyword" },
+  { command: "skill", description: "Search or show OpenClaw skills" },
+  { command: "command", description: "Show command hub help" },
+  { command: "commands", description: "Alias of help" },
+];
 
 export class TelegramChannelAdapter implements ChannelAdapter {
   readonly id = "telegram" as const;
@@ -163,6 +324,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     if (this.running) {
       return;
     }
+
+    try {
+      await this.registerBotCommands();
+    } catch {
+      // Best-effort: message polling should continue even if command registration fails.
+    }
+
     this.running = true;
     this.abort = new AbortController();
     this.runner = this.runPollLoop(handler, this.abort.signal);
@@ -252,12 +420,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           }
 
           const text = resolveInboundText(message);
-          let imagePaths: string[] = [];
-          let imageDownloadError = "";
+          let attachments: DownloadedTelegramAttachments = {
+            attachmentPaths: [],
+            imagePaths: [],
+            kinds: [],
+            errors: [],
+          };
           try {
-            imagePaths = await this.downloadImagePaths(message, signal);
+            attachments = await this.downloadAttachmentPaths(message, signal);
           } catch (error) {
-            imageDownloadError = error instanceof Error ? error.message : String(error);
+            attachments.errors.push(error instanceof Error ? error.message : String(error));
           }
 
           if (!text) {
@@ -290,14 +462,27 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           if (replyToMessageId) {
             inbound.replyToMessageId = replyToMessageId;
           }
-          if (imagePaths.length > 0) {
-            inbound.imagePaths = imagePaths;
+          if (attachments.attachmentPaths.length > 0) {
+            inbound.attachmentPaths = attachments.attachmentPaths;
+          }
+          if (attachments.imagePaths.length > 0) {
+            inbound.imagePaths = attachments.imagePaths;
+          }
+          if (
+            attachments.attachmentPaths.length > 0 ||
+            attachments.imagePaths.length > 0 ||
+            attachments.kinds.length > 0 ||
+            attachments.errors.length > 0
+          ) {
             inbound.metadata = {
-              telegram_image_count: imagePaths.length,
-            };
-          } else if (imageDownloadError) {
-            inbound.metadata = {
-              telegram_image_download_error: imageDownloadError,
+              telegram_attachment_count: attachments.attachmentPaths.length,
+              telegram_image_count: attachments.imagePaths.length,
+              telegram_attachment_kinds: attachments.kinds,
+              ...(attachments.errors.length > 0
+                ? {
+                    telegram_attachment_download_errors: attachments.errors,
+                  }
+                : {}),
             };
           }
           await handler(inbound);
@@ -322,28 +507,66 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     return response;
   }
 
-  private async downloadImagePaths(
-    message: TelegramMessage,
-    signal: AbortSignal,
-  ): Promise<string[]> {
-    if (!message.photo?.length) {
-      return [];
-    }
-    const selected = pickLargestPhoto(message.photo);
-    const fileId = selected?.file_id?.trim();
-    if (!fileId) {
-      return [];
-    }
-    const file = await this.callApi<TelegramFile>("getFile", { file_id: fileId }, signal);
-    const remotePath = file.file_path?.trim();
-    if (!remotePath) {
-      return [];
-    }
-    const localPath = await this.downloadTelegramFile(remotePath, signal);
-    return [localPath];
+  private async registerBotCommands(): Promise<void> {
+    await this.callApi<boolean>("setMyCommands", {
+      commands: TELEGRAM_COMMANDS,
+    });
   }
 
-  private async downloadTelegramFile(remotePath: string, signal: AbortSignal): Promise<string> {
+  private async downloadAttachmentPaths(
+    message: TelegramMessage,
+    signal: AbortSignal,
+  ): Promise<DownloadedTelegramAttachments> {
+    const candidates = resolveAttachmentCandidates(message);
+    if (candidates.length === 0) {
+      return {
+        attachmentPaths: [],
+        imagePaths: [],
+        kinds: [],
+        errors: [],
+      };
+    }
+
+    const downloaded: DownloadedTelegramAttachments = {
+      attachmentPaths: [],
+      imagePaths: [],
+      kinds: [],
+      errors: [],
+    };
+
+    for (const candidate of candidates) {
+      try {
+        const file = await this.callApi<TelegramFile>("getFile", { file_id: candidate.fileId }, signal);
+        const remotePath = file.file_path?.trim();
+        if (!remotePath) {
+          downloaded.errors.push(`${candidate.kind}: missing file_path`);
+          continue;
+        }
+        const localPath = await this.downloadTelegramFile(remotePath, candidate.defaultExt, signal);
+        downloaded.attachmentPaths.push(localPath);
+        downloaded.kinds.push(candidate.kind);
+        if (candidate.isImage) {
+          downloaded.imagePaths.push(localPath);
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        downloaded.errors.push(`${candidate.kind}: ${reason}`);
+      }
+    }
+
+    return {
+      attachmentPaths: [...new Set(downloaded.attachmentPaths)],
+      imagePaths: [...new Set(downloaded.imagePaths)],
+      kinds: [...new Set(downloaded.kinds)],
+      errors: downloaded.errors,
+    };
+  }
+
+  private async downloadTelegramFile(
+    remotePath: string,
+    fallbackExt: string,
+    signal: AbortSignal,
+  ): Promise<string> {
     const normalized = remotePath.replace(/^\/+/, "");
     const url = `${this.apiBaseUrl}/file/bot${this.token}/${normalized}`;
     const response = await fetch(url, {
@@ -356,8 +579,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     }
 
     const bytes = Buffer.from(await response.arrayBuffer());
-    const ext = path.extname(normalized).trim();
-    const safeExt = ext && ext.length <= 10 ? ext : ".jpg";
+    const ext = normalizeExtensionCandidate(path.extname(normalized));
+    const safeExt = ext ?? normalizeExtensionCandidate(fallbackExt) ?? ".bin";
     const root = path.join(os.tmpdir(), "opencarapace", "telegram-media");
     await mkdir(root, { recursive: true });
     const localPath = path.join(root, `${Date.now()}-${randomUUID()}${safeExt}`);

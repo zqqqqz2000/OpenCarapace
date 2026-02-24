@@ -36,6 +36,19 @@ function hasModelOption(args: string[]): boolean {
   return false;
 }
 
+function hasSandboxOption(args: string[]): boolean {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--sandbox") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function resolveSessionMetadata(request: BackendRunRequest): Record<string, unknown> {
   if (!isRecord(request.metadata)) {
     return {};
@@ -60,6 +73,7 @@ function resolveSessionString(
 }
 
 type ThinkingDepth = "low" | "medium" | "high";
+type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 function resolveThinkingDepth(sessionMetadata: Record<string, unknown>): ThinkingDepth | undefined {
   const raw = resolveSessionString(sessionMetadata, "thinking_depth");
@@ -67,6 +81,17 @@ function resolveThinkingDepth(sessionMetadata: Record<string, unknown>): Thinkin
     return undefined;
   }
   if (raw === "low" || raw === "medium" || raw === "high") {
+    return raw;
+  }
+  return undefined;
+}
+
+function resolveSandboxMode(sessionMetadata: Record<string, unknown>): CodexSandboxMode | undefined {
+  const raw = resolveSessionString(sessionMetadata, "sandbox_mode");
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "read-only" || raw === "workspace-write" || raw === "danger-full-access") {
     return raw;
   }
   return undefined;
@@ -88,15 +113,18 @@ function collectStringValues(value: unknown, output: string[]): void {
   }
 }
 
-function resolveImagePaths(metadata: BackendRunRequest["metadata"]): string[] {
+function resolveAttachmentPaths(metadata: BackendRunRequest["metadata"]): string[] {
   if (!isRecord(metadata)) {
     return [];
   }
-  const imagePaths: string[] = [];
-  collectStringValues(metadata.imagePaths, imagePaths);
-  collectStringValues(metadata.image_paths, imagePaths);
-  collectStringValues(metadata.localImagePaths, imagePaths);
-  return [...new Set(imagePaths)];
+  const attachmentPaths: string[] = [];
+  collectStringValues(metadata.attachmentPaths, attachmentPaths);
+  collectStringValues(metadata.attachment_paths, attachmentPaths);
+  collectStringValues(metadata.localAttachmentPaths, attachmentPaths);
+  collectStringValues(metadata.imagePaths, attachmentPaths);
+  collectStringValues(metadata.image_paths, attachmentPaths);
+  collectStringValues(metadata.localImagePaths, attachmentPaths);
+  return [...new Set(attachmentPaths)];
 }
 
 function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): string {
@@ -118,14 +146,14 @@ function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): strin
     sections.push(`Thinking depth preference: ${depth}. Keep user-visible output concise and actionable.`);
   }
 
-  const imagePaths = resolveImagePaths(request.metadata);
-  if (imagePaths.length > 0) {
-    const lines = imagePaths.map((entry, index) => `${index + 1}. ${entry}`);
+  const attachmentPaths = resolveAttachmentPaths(request.metadata);
+  if (attachmentPaths.length > 0) {
+    const lines = attachmentPaths.map((entry, index) => `${index + 1}. ${entry}`);
     sections.push(
       [
-        "Attached local image paths (temporary files):",
+        "Attached local file paths (temporary files):",
         ...lines,
-        "If the request involves images, inspect these files before responding.",
+        "If the request involves these files, inspect them before responding.",
       ].join("\n"),
     );
   }
@@ -166,11 +194,15 @@ class CodexCliSessionBackend implements AgentBackend {
     const previousThreadId = resolveSessionString(sessionMetadata, "codex_thread_id");
     const preferredModel = resolveSessionString(sessionMetadata, "model");
     const thinkingDepth = resolveThinkingDepth(sessionMetadata);
+    const sandboxMode = resolveSandboxMode(sessionMetadata);
     const prompt = composePrompt(request, thinkingDepth);
 
     const args = ["exec", "--json", ...this.options.baseArgs];
     if (preferredModel && !hasModelOption(args)) {
       args.push("--model", preferredModel);
+    }
+    if (sandboxMode && !hasSandboxOption(args)) {
+      args.push("--sandbox", sandboxMode);
     }
     if (previousThreadId) {
       args.push("resume", previousThreadId, prompt);

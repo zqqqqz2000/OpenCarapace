@@ -196,4 +196,30 @@ describe("ConversationCommandService", () => {
     });
     expect(status.finalText).toContain("- thinkingDepth: high");
   });
+
+  test("sets and clears codex sandbox mode by /sandbox", () => {
+    const service = createService();
+    const setResult = service.execute({
+      sessionId: "s-sandbox",
+      currentAgentId: "codex",
+      input: "/sandbox isolated",
+    });
+    expect(setResult.handled).toBeTrue();
+    expect(setResult.finalText).toContain("- sandbox: read-only");
+
+    const status = service.execute({
+      sessionId: "s-sandbox",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(status.finalText).toContain("- sandbox: read-only");
+
+    const clearResult = service.execute({
+      sessionId: "s-sandbox",
+      currentAgentId: "codex",
+      input: "/sandbox clear",
+    });
+    expect(clearResult.handled).toBeTrue();
+    expect(clearResult.finalText).toContain("Sandbox mode cleared");
+  });
 });

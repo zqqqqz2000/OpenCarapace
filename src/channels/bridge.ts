@@ -18,6 +18,7 @@ export type BridgeInboundPayload = {
   threadId?: string;
   replyToMessageId?: string;
   text?: string;
+  attachmentPaths?: string[];
   imagePaths?: string[];
   metadata?: Record<string, unknown>;
   raw?: unknown;
@@ -110,15 +111,25 @@ export class BridgeChannelAdapter implements ChannelAdapter {
     }
 
     const text = (payload.text ?? "").trim();
+    const attachmentPaths: string[] = [];
+    if (payload.attachmentPaths?.length) {
+      attachmentPaths.push(
+        ...payload.attachmentPaths.filter((item) => typeof item === "string" && item.trim().length > 0),
+      );
+    }
+    if (payload.imagePaths?.length) {
+      attachmentPaths.push(...payload.imagePaths.filter((item) => typeof item === "string" && item.trim().length > 0));
+    }
+
     const chatId = (payload.chatId ?? "").trim();
-    if (!text || !chatId) {
+    if ((!text && attachmentPaths.length === 0) || !chatId) {
       return false;
     }
 
     const inbound: ChannelInboundMessage = {
       channelId: this.id,
       chatId,
-      text,
+      text: text || "请基于附带附件进行处理。",
       raw: payload.raw ?? payload,
     };
     if (payload.accountId) {
@@ -138,6 +149,9 @@ export class BridgeChannelAdapter implements ChannelAdapter {
     }
     if (payload.replyToMessageId) {
       inbound.replyToMessageId = payload.replyToMessageId;
+    }
+    if (attachmentPaths.length > 0) {
+      inbound.attachmentPaths = [...new Set(attachmentPaths)];
     }
     if (payload.imagePaths?.length) {
       inbound.imagePaths = payload.imagePaths.filter((item) => typeof item === "string" && item.trim().length > 0);

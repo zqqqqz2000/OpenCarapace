@@ -17,6 +17,7 @@ export type ChannelInboundMessage = {
   threadId?: string;
   replyToMessageId?: string;
   text: string;
+  attachmentPaths?: string[];
   imagePaths?: string[];
   raw?: unknown;
   metadata?: Record<string, unknown>;

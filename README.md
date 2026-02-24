@@ -8,6 +8,7 @@
 - OpenClaw `SKILL.md` 生态接入（按问题动态匹配注入）
 - Channel-first 网关（Telegram + Slack/Discord/WeChat bridge）
 - Telegram 图片入站（下载到临时目录并把本地路径注入 Codex prompt）
+- Telegram `/command` 自动补全（`setMyCommands`）
 - `/command` 会话控制（如 `/status`、`/agent`、`/memory`）
 - 轻量工具命令（`/tools`、`/grep`、`/skill`）
 - 运行中通知事件（`notify` / `progress` / `ask_user`）
@@ -137,7 +138,7 @@ openclaw_root = "/Users/zzzz/Documents/openclaw"
 
 - `cloudcode` 和 `claude-code` 不再提供 mock 输出
 - 如果把它们 `enabled=true`，必须配置对应 `cli_command`（否则启动时报错）
-- 会话（含 `codex_thread_id`、history、model/depth 偏好）默认持久化到 `sessions.json`
+- 会话（含 `codex_thread_id`、history、model/depth/sandbox 偏好）默认持久化到 `sessions.json`
   - 默认相对 `config.toml` 所在目录
   - 可通过 `runtime.session_store_file` 指定绝对或相对路径
 
@@ -153,14 +154,19 @@ openclaw_root = "/Users/zzzz/Documents/openclaw"
 bun run opencarapace gateway
 ```
 
-图片消息处理（Telegram 原生 channel）：
+命令补全（Telegram 原生 channel）：
 
-- 支持用户发送 `photo`（可带 caption）
-- 网关会调用 Telegram `getFile`，将图片下载到本地临时目录：
+- 启动时会调用 Telegram `setMyCommands`
+- 用户在聊天框输入 `/` 可直接看到可用命令（如 `help`/`new`/`model`/`depth`/`sandbox`）
+
+附件消息处理（Telegram 原生 channel）：
+
+- 支持用户发送 `photo`、`voice`、`audio`、`document`、`video`、`video_note`、`animation`、`sticker`（可带 caption）
+- 网关会调用 Telegram `getFile`，将附件下载到本地临时目录：
   - `${TMPDIR}/opencarapace/telegram-media`（例如 `/tmp/opencarapace/telegram-media`）
-- 下载后的本地路径会写入本轮请求 metadata（`imagePaths`）
-- Codex adapter 会把这些本地路径附加进用户 prompt，便于 agent 在同一轮读取图片上下文
-- 若图片下载失败，文本消息仍会继续处理（失败信息放入 metadata）
+- 下载后的本地路径会写入本轮请求 metadata（`attachmentPaths`，并兼容保留 `imagePaths`）
+- Codex adapter 会把这些本地路径附加进用户 prompt，便于 agent 在同一轮读取附件上下文
+- 若附件下载失败，文本消息仍会继续处理（失败信息放入 metadata）
 
 ### 其他渠道（Bridge 方式）
 
@@ -173,7 +179,7 @@ bun run opencarapace gateway
 - 而是由上游网关把文本消息桥接到 `POST /channels/:id/inbound`
 - OpenCarapace 只负责会话编排和文本回复回推
 - 当前桥接渠道（Slack/Discord/WeChat）聚焦文本消息；媒体/语音/文件暂未启用
-- Telegram 原生渠道已支持图片入站并注入本地图片路径到 Codex prompt
+- Telegram 原生渠道已支持附件入站并注入本地附件路径到 Codex prompt
 
 示例（Slack）：
 
@@ -227,6 +233,7 @@ body:
 - `/new`：清空当前会话并清除当前 Codex thread 绑定（下一轮会新建）
 - `/model <name|clear>`：设置或清除当前会话的模型偏好
 - `/depth <low|medium|high|clear>`：设置或清除当前会话的思考深度偏好
+- `/sandbox <read-only|workspace-write|danger-full-access|clear>`：设置或清除当前会话的 Codex sandbox
 
 ## Docker
 
