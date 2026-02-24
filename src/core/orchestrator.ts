@@ -86,6 +86,7 @@ export class ChatOrchestrator {
         skills: this.skills,
         tools: this.tools,
         isSessionRunning: (sessionId) => this.isTurnRunning(sessionId),
+        cancelSessionTurn: (sessionId, reason) => this.cancelRunningTurn(sessionId, reason),
       });
   }
 

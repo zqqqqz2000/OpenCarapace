@@ -459,6 +459,41 @@ describe("ChannelGateway", () => {
     expect(statusReply).toBeDefined();
   });
 
+  test("interrupts running turn via /stop command", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const runningTurn = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stop",
+      messageId: "300",
+      text: "先跑一个慢任务",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const stopTurn = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-stop",
+      messageId: "301",
+      text: "/stop",
+    });
+
+    const firstResult = await runningTurn;
+    expect(firstResult.finalText).toBe("");
+    expect(stopTurn.finalText).toContain("Stop signal sent.");
+    expect(adapter.sent.some((message) => message.text.includes("Stop signal sent."))).toBeTrue();
+  });
+
   test("marks running sessions in /sessions while a turn is active", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();

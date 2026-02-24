@@ -186,11 +186,31 @@ function resolveInboundText(message: TelegramMessage): string {
     return caption;
   }
 
+  if (isVoiceOnlyInput(message)) {
+    return "这是用户的语音输入，请直接理解语音内容并执行用户诉求，不要要求用户先转写。";
+  }
+
   if (hasAttachment(message)) {
     return "请基于附带附件进行处理。";
   }
 
   return "";
+}
+
+function isVoiceOnlyInput(message: TelegramMessage): boolean {
+  if (message.text?.trim() || message.caption?.trim()) {
+    return false;
+  }
+  return Boolean(
+    message.voice &&
+      !message.photo?.length &&
+      !message.audio &&
+      !message.document &&
+      !message.video &&
+      !message.video_note &&
+      !message.animation &&
+      !message.sticker,
+  );
 }
 
 function pickLargestPhoto(photos: TelegramPhotoSize[]): TelegramPhotoSize | undefined {
@@ -311,6 +331,7 @@ function normalizeExtensionCandidate(value: string | undefined): string | undefi
 const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "help", description: "Show available commands" },
   { command: "status", description: "Show current session status" },
+  { command: "stop", description: "Interrupt current running turn in this session" },
   { command: "new", description: "Reset current session and start new turn chain" },
   { command: "history", description: "Show recent messages in this session" },
   { command: "session", description: "Show current session metadata" },
@@ -647,6 +668,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
               telegram_attachment_count: attachments.attachmentPaths.length,
               telegram_image_count: attachments.imagePaths.length,
               telegram_attachment_kinds: attachments.kinds,
+              ...(isVoiceOnlyInput(message)
+                ? {
+                    telegram_voice_only_input: true,
+                  }
+                : {}),
               ...(attachments.errors.length > 0
                 ? {
                     telegram_attachment_download_errors: attachments.errors,

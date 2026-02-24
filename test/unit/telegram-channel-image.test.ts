@@ -52,6 +52,7 @@ describe("TelegramChannelAdapter media inbound", () => {
         expect(commands).toContain("help");
         expect(commands).toContain("command");
         expect(commands).toContain("sandbox");
+        expect(commands).toContain("stop");
         sawSetMyCommands = true;
         return jsonResponse({ ok: true, result: true });
       }
@@ -230,9 +231,10 @@ describe("TelegramChannelAdapter media inbound", () => {
     const inbound = await withTimeout(inboundPromise, 2000);
     await adapter.stop();
 
-    expect(inbound.text).toBe("请基于附带附件进行处理。");
+    expect(inbound.text).toBe("这是用户的语音输入，请直接理解语音内容并执行用户诉求，不要要求用户先转写。");
     expect(inbound.attachmentPaths?.length).toBe(1);
     expect(inbound.imagePaths).toBeUndefined();
+    expect(inbound.metadata?.telegram_voice_only_input).toBeTrue();
 
     const localPath = inbound.attachmentPaths?.[0];
     expect(typeof localPath).toBe("string");

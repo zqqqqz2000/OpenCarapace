@@ -90,4 +90,27 @@ describe("Codex prompt attachment path injection", () => {
     expect(prompt).toContain("User request:");
     expect(prompt).toContain("请看图并告诉我主要内容");
   });
+
+  test("adds voice-only execution note when inbound is voice-only", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-codex-voice-"));
+    const scriptPath = path.join(root, "probe-codex.mjs");
+    const promptPath = path.join(root, "prompt.txt");
+    createPromptProbeScript(scriptPath, promptPath);
+
+    const orchestrator = createOrchestrator(scriptPath);
+    await orchestrator.chat({
+      sessionId: "s-voice-only",
+      agentId: "codex",
+      input: "这是用户的语音输入，请直接理解语音内容并执行用户诉求，不要要求用户先转写。",
+      metadata: {
+        attachmentPaths: ["/tmp/opencarapace/voice-only.ogg"],
+        telegram_voice_only_input: true,
+      },
+    });
+
+    const prompt = fs.readFileSync(promptPath, "utf-8");
+    expect(prompt).toContain("Input mode note: this is a voice-only user input.");
+    expect(prompt).toContain("execute the user's intent directly");
+    expect(prompt).toContain("这是用户的语音输入");
+  });
 });

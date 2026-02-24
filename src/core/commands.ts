@@ -204,6 +204,7 @@ export type ConversationCommandServiceDeps = {
   skills: SkillRuntime;
   tools?: ToolRuntime;
   isSessionRunning?: (sessionId: string) => boolean;
+  cancelSessionTurn?: (sessionId: string, reason?: string) => boolean;
 };
 
 export class ConversationCommandService {
@@ -256,6 +257,10 @@ export class ConversationCommandService {
           finalText: this.statusText(params.sessionId, params.currentAgentId),
           agentId: params.currentAgentId,
         };
+      case "stop":
+      case "cancel":
+      case "interrupt":
+        return this.stopTurnText(params.sessionId, params.currentAgentId);
       case "new":
       case "reset": {
         const next = this.deps.sessions.reset(params.sessionId, params.currentAgentId);
@@ -358,6 +363,7 @@ export class ConversationCommandService {
       "Available commands",
       "- /help: show command list",
       "- /status: show current conversation status",
+      "- /stop: interrupt current running turn in this session",
       "- /new or /reset: clear current session messages",
       "- /history [n]: show last n messages (default 12)",
       "- /sessions: list recent sessions",
@@ -411,6 +417,29 @@ export class ConversationCommandService {
       `- skills: ${skills.length}`,
       "Hint: use /help to see all commands.",
     ].join("\n");
+  }
+
+  private stopTurnText(sessionId: string, currentAgentId: AgentId): CommandExecutionResult {
+    if (!this.deps.cancelSessionTurn) {
+      return {
+        handled: true,
+        finalText: "Stop command is not available in current runtime.",
+        agentId: currentAgentId,
+      };
+    }
+    const canceled = this.deps.cancelSessionTurn(sessionId, `Stopped by /stop in session ${sessionId}`);
+    if (!canceled) {
+      return {
+        handled: true,
+        finalText: `No running turn to stop in session ${sessionId}.`,
+        agentId: currentAgentId,
+      };
+    }
+    return {
+      handled: true,
+      finalText: `Stop signal sent.\n- session: ${sessionId}\n- status: interrupting running turn`,
+      agentId: currentAgentId,
+    };
   }
 
   private historyText(sessionId: string, limit: number): string {

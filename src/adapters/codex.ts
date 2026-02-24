@@ -140,6 +140,13 @@ function resolveSteerFlag(metadata: BackendRunRequest["metadata"]): boolean {
   return metadata.steer === true;
 }
 
+function resolveVoiceInputOnlyFlag(metadata: BackendRunRequest["metadata"]): boolean {
+  if (!isRecord(metadata)) {
+    return false;
+  }
+  return metadata.voice_input_only === true || metadata.telegram_voice_only_input === true;
+}
+
 function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): string {
   const sections: string[] = [];
 
@@ -162,6 +169,12 @@ function composePrompt(request: BackendRunRequest, depth?: ThinkingDepth): strin
   if (resolveSteerFlag(request.metadata)) {
     sections.push(
       "Steer update: user sent a newer message during an ongoing run. Prioritize the latest user request.",
+    );
+  }
+
+  if (resolveVoiceInputOnlyFlag(request.metadata)) {
+    sections.push(
+      "Input mode note: this is a voice-only user input. Understand the voice content and execute the user's intent directly, without asking for manual transcription.",
     );
   }
 

@@ -15,6 +15,7 @@ import { createSkillLookupTool } from "../../src/tools/skill-tool.js";
 
 function createServiceBundle(options?: {
   isSessionRunning?: (sessionId: string) => boolean;
+  cancelSessionTurn?: (sessionId: string, reason?: string) => boolean;
 }): {
   service: ConversationCommandService;
   sessions: SessionManager;
@@ -76,9 +77,13 @@ function createServiceBundle(options?: {
     skills: SkillRuntime;
     tools: ToolRuntime;
     isSessionRunning?: (sessionId: string) => boolean;
+    cancelSessionTurn?: (sessionId: string, reason?: string) => boolean;
   };
   if (options?.isSessionRunning) {
     deps.isSessionRunning = options.isSessionRunning;
+  }
+  if (options?.cancelSessionTurn) {
+    deps.cancelSessionTurn = options.cancelSessionTurn;
   }
   const service = new ConversationCommandService(deps);
   return { service, sessions };
@@ -242,6 +247,37 @@ describe("ConversationCommandService", () => {
     });
     expect(clearResult.handled).toBeTrue();
     expect(clearResult.finalText).toContain("Sandbox mode cleared");
+  });
+
+  test("stops running turn by /stop", () => {
+    let cancelCalls = 0;
+    const service = createServiceBundle({
+      cancelSessionTurn: () => {
+        cancelCalls += 1;
+        return true;
+      },
+    }).service;
+    const result = service.execute({
+      sessionId: "s-stop",
+      currentAgentId: "codex",
+      input: "/stop",
+    });
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Stop signal sent.");
+    expect(cancelCalls).toBe(1);
+  });
+
+  test("returns no-running message when /stop cannot cancel", () => {
+    const service = createServiceBundle({
+      cancelSessionTurn: () => false,
+    }).service;
+    const result = service.execute({
+      sessionId: "s-stop-empty",
+      currentAgentId: "codex",
+      input: "/stop",
+    });
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("No running turn to stop");
   });
 
   test("formats /sessions with readable name and short relative time", () => {
