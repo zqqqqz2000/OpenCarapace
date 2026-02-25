@@ -253,16 +253,12 @@ describe("ConversationCommandService", () => {
     expect(clearResult.finalText).toContain("Sandbox mode cleared");
   });
 
-  test("shows codex context usage and quota windows in /status when usage is available", () => {
+  test("shows codex context usage in /status when usage is available", () => {
     const { service, sessions } = createServiceBundle();
     sessions.setMetadata("s-usage", "codex", {
       codex_usage_snapshot: {
         context_used_tokens: 1200,
         context_window_tokens: 4000,
-        quota_5h_used: 30,
-        quota_5h_limit: 100,
-        week_used: 120,
-        week_limit: 700,
       },
     });
 
@@ -274,8 +270,26 @@ describe("ConversationCommandService", () => {
 
     expect(status.handled).toBeTrue();
     expect(status.finalText).toContain("- codexContextUsage: 30% (1200/4000)");
-    expect(status.finalText).toContain("- codexQuota5h: 30/100 (30%)");
-    expect(status.finalText).toContain("- codexQuotaWeek: 120/700 (17.1%)");
+  });
+
+  test("shows fallback usage text when codex returns token totals only", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.setMetadata("s-usage-fallback", "codex", {
+      codex_usage_snapshot: {
+        input_tokens: 76561,
+        cached_input_tokens: 67456,
+        output_tokens: 2760,
+      },
+    });
+
+    const status = service.execute({
+      sessionId: "s-usage-fallback",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+
+    expect(status.handled).toBeTrue();
+    expect(status.finalText).toContain("- codexContextUsage: 76561 used (limit unknown)");
   });
 
   test("stops running turn by /stop", () => {

@@ -154,80 +154,15 @@ function formatCodexContextUsage(usage: unknown): string {
   }
 
   if (percent === undefined) {
-    return "(unavailable)";
+    if (used !== undefined) {
+      return `${formatCount(used)} used (limit unknown)`;
+    }
+    return "(not reported)";
   }
   if (used !== undefined && limit !== undefined && limit > 0) {
     return `${formatPercent(percent)} (${formatCount(used)}/${formatCount(limit)})`;
   }
   return formatPercent(percent);
-}
-
-type CodexQuotaWindow = "5h" | "week";
-
-function metricMatchesWindow(metric: UsageMetric, window: CodexQuotaWindow): boolean {
-  const target = `${metric.path} ${metric.key}`;
-  if (window === "5h") {
-    return (
-      target.includes("5h") ||
-      target.includes("5-hour") ||
-      target.includes("5hour") ||
-      target.includes("5_hr") ||
-      target.includes("five hour") ||
-      target.includes("five-hour") ||
-      target.includes("five_hour") ||
-      target.includes("300m")
-    );
-  }
-  return (
-    target.includes("week") ||
-    target.includes("weekly") ||
-    target.includes("7d") ||
-    target.includes("7-day") ||
-    target.includes("7day")
-  );
-}
-
-function formatCodexQuotaUsage(usage: unknown, window: CodexQuotaWindow): string {
-  if (!isRecord(usage) && !Array.isArray(usage)) {
-    return "(unavailable)";
-  }
-  const metrics: UsageMetric[] = [];
-  collectUsageMetrics(usage, "usage", metrics);
-  if (metrics.length === 0) {
-    return "(unavailable)";
-  }
-
-  const scoped = metrics.filter((metric) => metricMatchesWindow(metric, window));
-  if (scoped.length === 0) {
-    return "(unavailable)";
-  }
-
-  const used = pickMetricNumber(
-    scoped,
-    (metric) => /(used|usage|consumed|spent|spend)/.test(metric.key),
-  );
-  const limit = pickMetricNumber(
-    scoped,
-    (metric) =>
-      /(limit|max|quota|cap|total)/.test(metric.key) &&
-      !/(used|usage|consumed|spent|spend)/.test(metric.key) &&
-      !/(remaining|left|available|reset|renew|next)/.test(metric.key),
-  );
-  const remaining = pickMetricNumber(
-    scoped,
-    (metric) => /(remaining|left|available)/.test(metric.key),
-  );
-
-  if (used !== undefined && limit !== undefined && limit > 0) {
-    return `${formatCount(used)}/${formatCount(limit)} (${formatPercent((used / limit) * 100)})`;
-  }
-  if (remaining !== undefined && limit !== undefined && limit > 0) {
-    return `${formatCount(remaining)}/${formatCount(limit)} left`;
-  }
-  if (used !== undefined) {
-    return `${formatCount(used)} used`;
-  }
-  return "(unavailable)";
 }
 
 function formatRelativeShort(timestampMs: number, nowMs = Date.now()): string {
@@ -623,8 +558,6 @@ export class ConversationCommandService {
         : "(none)";
     const codexUsage = metadata.codex_usage_snapshot;
     const codexContext = formatCodexContextUsage(codexUsage);
-    const codexQuota5h = formatCodexQuotaUsage(codexUsage, "5h");
-    const codexQuotaWeek = formatCodexQuotaUsage(codexUsage, "week");
     return [
       "Conversation status",
       `- session: ${sessionId}`,
@@ -636,8 +569,6 @@ export class ConversationCommandService {
       `- sandbox: ${sandboxMode}`,
       `- codexThread: ${codexThread}`,
       `- codexContextUsage: ${codexContext}`,
-      `- codexQuota5h: ${codexQuota5h}`,
-      `- codexQuotaWeek: ${codexQuotaWeek}`,
       `- skills: ${skills.length}`,
       "Hint: use /help to see all commands.",
     ].join("\n");
