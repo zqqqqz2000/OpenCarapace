@@ -202,6 +202,10 @@ function isProjectCommandText(input: string): boolean {
   return commandNameFromText(input) === "project";
 }
 
+function isRunningCommandText(input: string): boolean {
+  return commandNameFromText(input) === "running";
+}
+
 function readTelegramProjectPickToken(metadata: unknown): string | undefined {
   if (!isRecord(metadata)) {
     return undefined;
@@ -383,6 +387,7 @@ class ChannelTurnRelay {
   constructor(
     private readonly adapter: ChannelAdapter,
     private readonly inbound: ChannelInboundMessage,
+    private readonly sessionId: string,
     private readonly options: TurnRelayOptions = {},
   ) {
     this.animationEnabled = !looksLikeSlashCommand(inbound.text);
@@ -468,6 +473,14 @@ class ChannelTurnRelay {
     this.closed = true;
     this.deltaBuffer = "";
     this.stopProgressAnimation(true);
+  }
+
+  belongsToSession(sessionId: string): boolean {
+    return this.sessionId === sessionId;
+  }
+
+  getRunningProgressMessageId(): string | undefined {
+    return this.progressMessageId;
   }
 
   private enqueueProgressWork(work: () => Promise<void>): void {
@@ -994,6 +1007,18 @@ export class ChannelGateway {
 
     const bypassTurnDecision = shouldBypassTurnDecision(message.metadata);
     const isCommandMessage = looksLikeSlashCommand(message.text);
+    if (channel.id === "telegram" && isRunningCommandText(message.text)) {
+      const runningProgressMessageId = this.findRunningProgressMessageId(sessionId);
+      if (runningProgressMessageId) {
+        await this.sendAuxiliaryMessage(
+          channel,
+          message,
+          "已定位当前 running 消息。",
+          runningProgressMessageId,
+        );
+        return this.emptyTurnResult(agentId, sessionId);
+      }
+    }
     if (
       !isCommandMessage &&
       this.orchestrator.isTurnRunning(sessionId) &&
@@ -1003,7 +1028,7 @@ export class ChannelGateway {
       return this.emptyTurnResult(agentId, sessionId);
     }
 
-    const relay = new ChannelTurnRelay(channel, message);
+    const relay = new ChannelTurnRelay(channel, message, sessionId);
     this.activeRelays.add(relay);
     this.activeSessionIds.add(sessionId);
     const steerTriggered =
@@ -1363,6 +1388,7 @@ export class ChannelGateway {
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
     text: string,
+    replyToMessageId?: string,
   ): Promise<void> {
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -1375,10 +1401,24 @@ export class ChannelGateway {
     if (inbound.threadId) {
       outbound.threadId = inbound.threadId;
     }
-    if (inbound.messageId) {
-      outbound.replyToMessageId = inbound.messageId;
+    const replyTo = replyToMessageId?.trim() || inbound.messageId;
+    if (replyTo) {
+      outbound.replyToMessageId = replyTo;
     }
     await channel.sendMessage(outbound);
+  }
+
+  private findRunningProgressMessageId(sessionId: string): string | undefined {
+    for (const relay of this.activeRelays) {
+      if (!relay.belongsToSession(sessionId)) {
+        continue;
+      }
+      const messageId = relay.getRunningProgressMessageId();
+      if (messageId) {
+        return messageId;
+      }
+    }
+    return undefined;
   }
 
   private decorateSelectedSessionHistory(

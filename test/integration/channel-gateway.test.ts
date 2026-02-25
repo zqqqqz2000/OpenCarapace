@@ -756,6 +756,46 @@ describe("ChannelGateway", () => {
     expect(adapter.sent.some((message) => message.text.includes("Stop signal sent."))).toBeTrue();
   });
 
+  test("quotes active running telegram progress message via /running", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const runningTurn = gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-running-quote",
+      messageId: "400",
+      text: "慢任务用于测试 /running 引用",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const runningCommandTurn = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-running-quote",
+      messageId: "401",
+      text: "/running",
+    });
+
+    expect(runningCommandTurn.finalText).toBe("");
+    const quoteMessage = adapter.sent.find((message) =>
+      message.text.includes("已定位当前 running 消息。"),
+    );
+    expect(quoteMessage).toBeDefined();
+    expect(quoteMessage?.replyToMessageId).toBe("1");
+    expect(quoteMessage?.replyToMessageId).not.toBe("401");
+    expect(adapter.sent.some((message) => message.text.includes("Running quote:"))).toBeFalse();
+    await runningTurn;
+  });
+
   test("marks running sessions in /sessions while a turn is active", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();
