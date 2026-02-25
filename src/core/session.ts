@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId, ChatMessage } from "./types.js";
 
+const SESSION_STORE_LOCK_TIMEOUT_MS = 5000;
+const SESSION_STORE_LOCK_RETRY_MS = 20;
+const SESSION_STORE_LOCK_STALE_MS = 30_000;
+
 export type SessionRecord = {
   id: string;
   agentId: AgentId;
@@ -100,12 +104,14 @@ export type FileSessionStoreOptions = {
 
 export class FileSessionStore implements SessionStore {
   private readonly filePath: string;
+  private readonly lockFilePath: string;
   private readonly maxSessions: number;
   private readonly autoFlush: boolean;
   private readonly records = new Map<string, SessionRecord>();
 
   constructor(options: FileSessionStoreOptions) {
     this.filePath = path.resolve(options.filePath);
+    this.lockFilePath = `${this.filePath}.lock`;
     this.maxSessions = Math.max(1, Math.floor(options.maxSessions ?? 500));
     this.autoFlush = options.autoFlush ?? true;
     this.load();
@@ -116,22 +122,28 @@ export class FileSessionStore implements SessionStore {
   }
 
   save(record: SessionRecord): void {
-    this.records.set(record.id, {
-      ...record,
-      messages: [...record.messages],
-      metadata: { ...(record.metadata ?? {}) },
+    this.withFileLock(() => {
+      this.mergeFromDiskLocked();
+      this.records.set(record.id, {
+        ...record,
+        messages: [...record.messages],
+        metadata: { ...(record.metadata ?? {}) },
+      });
+      this.prune();
+      if (this.autoFlush) {
+        this.flushLocked();
+      }
     });
-    this.prune();
-    if (this.autoFlush) {
-      this.flush();
-    }
   }
 
   delete(sessionId: string): void {
-    this.records.delete(sessionId);
-    if (this.autoFlush) {
-      this.flush();
-    }
+    this.withFileLock(() => {
+      this.mergeFromDiskLocked();
+      this.records.delete(sessionId);
+      if (this.autoFlush) {
+        this.flushLocked();
+      }
+    });
   }
 
   list(): SessionRecord[] {
@@ -143,31 +155,30 @@ export class FileSessionStore implements SessionStore {
   }
 
   flush(): void {
-    const directory = path.dirname(this.filePath);
-    fs.mkdirSync(directory, { recursive: true });
-    const payload = JSON.stringify(
-      {
-        version: 1,
-        sessions: this.list(),
-      },
-      null,
-      2,
-    );
-    const tempFilePath = `${this.filePath}.tmp`;
-    fs.writeFileSync(tempFilePath, payload, "utf-8");
-    fs.renameSync(tempFilePath, this.filePath);
+    this.withFileLock(() => {
+      this.mergeFromDiskLocked();
+      this.prune();
+      this.flushLocked();
+    });
   }
 
   private load(): void {
+    for (const record of this.readRecordsFromDisk()) {
+      this.records.set(record.id, record);
+    }
+    this.prune();
+  }
+
+  private readRecordsFromDisk(): SessionRecord[] {
     if (!fs.existsSync(this.filePath)) {
-      return;
+      return [];
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
     } catch {
-      return;
+      return [];
     }
 
     const rawSessions = (() => {
@@ -180,14 +191,95 @@ export class FileSessionStore implements SessionStore {
       return [];
     })();
 
+    const records: SessionRecord[] = [];
     for (const entry of rawSessions) {
       const record = toSessionRecord(entry);
       if (!record) {
         continue;
       }
-      this.records.set(record.id, record);
+      records.push(record);
     }
-    this.prune();
+    return records;
+  }
+
+  private mergeFromDiskLocked(): void {
+    const external = this.readRecordsFromDisk();
+    for (const record of external) {
+      const current = this.records.get(record.id);
+      if (!current || record.updatedAt >= current.updatedAt) {
+        this.records.set(record.id, record);
+      }
+    }
+  }
+
+  private flushLocked(): void {
+    const directory = path.dirname(this.filePath);
+    fs.mkdirSync(directory, { recursive: true });
+    const payload = JSON.stringify(
+      {
+        version: 1,
+        sessions: this.list(),
+      },
+      null,
+      2,
+    );
+    const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    fs.writeFileSync(tempFilePath, payload, "utf-8");
+    fs.renameSync(tempFilePath, this.filePath);
+  }
+
+  private withFileLock<T>(work: () => T): T {
+    const directory = path.dirname(this.lockFilePath);
+    fs.mkdirSync(directory, { recursive: true });
+    const startedAt = Date.now();
+    while (true) {
+      let descriptor: number | undefined;
+      try {
+        descriptor = fs.openSync(this.lockFilePath, "wx");
+      } catch (error) {
+        const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+        if (code !== "EEXIST") {
+          throw error;
+        }
+        this.tryClearStaleLock();
+        if (Date.now() - startedAt >= SESSION_STORE_LOCK_TIMEOUT_MS) {
+          throw new Error(`timed out acquiring session store lock: ${this.lockFilePath}`);
+        }
+        this.waitSync(SESSION_STORE_LOCK_RETRY_MS);
+        continue;
+      }
+
+      try {
+        return work();
+      } finally {
+        if (descriptor !== undefined) {
+          fs.closeSync(descriptor);
+        }
+        try {
+          fs.unlinkSync(this.lockFilePath);
+        } catch {
+          // Ignore lock cleanup failures.
+        }
+      }
+    }
+  }
+
+  private tryClearStaleLock(): void {
+    try {
+      const stat = fs.statSync(this.lockFilePath);
+      if (Date.now() - stat.mtimeMs >= SESSION_STORE_LOCK_STALE_MS) {
+        fs.unlinkSync(this.lockFilePath);
+      }
+    } catch {
+      // Lock disappeared or stat/unlink failed; next loop retry will handle it.
+    }
+  }
+
+  private waitSync(milliseconds: number): void {
+    const deadline = Date.now() + Math.max(1, Math.floor(milliseconds));
+    while (Date.now() < deadline) {
+      // Busy wait because FileSessionStore APIs are synchronous.
+    }
   }
 
   private prune(): void {
@@ -250,21 +342,6 @@ export class SessionManager {
     return [...this.store.list()].sort(
       (left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id),
     );
-  }
-
-  reset(sessionId: string, agentId: AgentId): SessionRecord {
-    const now = Date.now();
-    const previous = this.store.get(sessionId);
-    const next: SessionRecord = {
-      id: sessionId,
-      agentId,
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-      metadata: { ...(previous?.metadata ?? {}) },
-    };
-    this.store.save(next);
-    return next;
   }
 
   setAgent(sessionId: string, nextAgentId: AgentId): SessionRecord {

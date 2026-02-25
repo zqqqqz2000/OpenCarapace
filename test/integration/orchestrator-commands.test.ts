@@ -107,4 +107,29 @@ describe("ChatOrchestrator commands", () => {
     expect(sessions.finalText).toContain("帮我梳理支付超时与重试告警的排查步骤");
     expect(sessions.finalText).toMatch(/1\.\s.+\s(now|\d+m|\d+h|\d+d|\d+w|\d+mo|\d+y)\s<codex>\sx2/);
   });
+
+  test("creates a new session on /new and keeps old session history", async () => {
+    const orchestrator = createDeterministicOrchestrator();
+
+    await orchestrator.chat({
+      sessionId: "cmd-new-1",
+      input: "old-session-turn",
+    });
+    const created = await orchestrator.chat({
+      sessionId: "cmd-new-1",
+      input: "/new",
+    });
+
+    expect(created.finalText).toContain("Started a new session.");
+    expect(created.sessionId).not.toBe("cmd-new-1");
+    const nextSessionId = created.sessionId;
+
+    await orchestrator.chat({
+      sessionId: nextSessionId,
+      input: "new-session-turn",
+    });
+
+    expect(orchestrator.sessions.snapshot("cmd-new-1")?.messages.length).toBe(2);
+    expect(orchestrator.sessions.snapshot(nextSessionId)?.messages.length).toBe(2);
+  });
 });

@@ -5,6 +5,29 @@ import { describe, expect, test } from "bun:test";
 import { FileSessionStore, SessionManager } from "../../src/core/session.js";
 
 describe("FileSessionStore", () => {
+  test("merges writes from multiple store instances sharing one file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-session-file-race-"));
+    const filePath = path.join(dir, "sessions.json");
+
+    const sessionsA = new SessionManager(new FileSessionStore({ filePath }));
+    const sessionsB = new SessionManager(new FileSessionStore({ filePath }));
+
+    sessionsA.appendMessage("s-old", "codex", {
+      role: "user",
+      content: "old",
+      createdAt: Date.now(),
+    });
+    sessionsB.appendMessage("s-new", "codex", {
+      role: "user",
+      content: "new",
+      createdAt: Date.now(),
+    });
+
+    const reloaded = new SessionManager(new FileSessionStore({ filePath }));
+    const ids = reloaded.list().map((item) => item.id).sort();
+    expect(ids).toEqual(["s-new", "s-old"]);
+  });
+
   test("persists messages and metadata across store instances", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-session-file-"));
     const filePath = path.join(dir, "sessions.json");

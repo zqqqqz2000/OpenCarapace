@@ -11,6 +11,7 @@ import {
   parseTelegramSessionPickCallbackData,
 } from "./telegram-session-picker.js";
 import {
+  isTurnRunningQuoteCallbackData,
   isTurnRunningStopCallbackData,
   parseTurnDecisionCallbackData,
   TURN_DECISION_META_ACTION,
@@ -156,6 +157,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 const TELEGRAM_OUTBOUND_MIN_INTERVAL_MS = 1200;
+const TELEGRAM_OUTBOUND_SCOPE_IDLE_TTL_MS = 10 * 60 * 1000;
 const TELEGRAM_RATE_LIMIT_FALLBACK_RETRY_SECONDS = 1;
 const TELEGRAM_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const TELEGRAM_RATE_LIMIT_JITTER_MIN = 0.5;
@@ -544,10 +546,11 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "help", description: "Show available commands" },
   { command: "status", description: "Show current session status" },
   { command: "stop", description: "Interrupt current running turn in this session" },
-  { command: "new", description: "Reset current session and start new turn chain" },
+  { command: "new", description: "Keep current session and switch to a new one" },
   { command: "history", description: "Show recent messages in this session" },
   { command: "session", description: "Show current session metadata" },
   { command: "sessions", description: "List recent sessions" },
+  { command: "running", description: "Quote current session to locate running turn" },
   { command: "project", description: "Select active project" },
   { command: "agent", description: "Show or switch current agent" },
   { command: "model", description: "Show or set model preference" },
@@ -563,7 +566,7 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
 
 function buildDefaultReplyKeyboardMarkup(): Record<string, unknown> {
   return {
-    keyboard: [[{ text: "/new" }, { text: "/sessions" }], [{ text: "/project" }]],
+    keyboard: [[{ text: "/new" }, { text: "/sessions" }], [{ text: "/running" }, { text: "/project" }]],
     resize_keyboard: true,
     is_persistent: true,
     one_time_keyboard: false,
@@ -685,6 +688,21 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     return state;
   }
 
+  private pruneOutboundScopes(now = Date.now()): void {
+    for (const [scopeKey, state] of this.outboundScopes.entries()) {
+      if (state.pendingCount > 0) {
+        continue;
+      }
+      const keepUntil = Math.max(
+        state.lastOutboundAt + TELEGRAM_OUTBOUND_MIN_INTERVAL_MS,
+        state.rateLimitedUntilAt,
+      );
+      if (now >= keepUntil + TELEGRAM_OUTBOUND_SCOPE_IDLE_TTL_MS) {
+        this.outboundScopes.delete(scopeKey);
+      }
+    }
+  }
+
   private async reserveOutboundSlot(
     operation: string,
     scopeKey: string,
@@ -727,6 +745,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     scopeKey: string,
     work: (context: { outboundSequence: number; reservedAtMs: number; attempt: number }) => Promise<T>,
   ): Promise<T> {
+    this.pruneOutboundScopes();
     const outboundSequence = ++this.outboundSequence;
     const normalizedScopeKey = scopeKey.trim() || "__unknown_chat__";
     const scopeState = this.getOutboundScopeState(normalizedScopeKey);
@@ -797,9 +816,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const next = scopeState.chain.then(run, run);
     const tracked = next.finally(() => {
       scopeState.pendingCount = Math.max(0, scopeState.pendingCount - 1);
-      if (scopeState.pendingCount === 0 && Date.now() >= scopeState.rateLimitedUntilAt) {
-        this.outboundScopes.delete(normalizedScopeKey);
-      }
+      this.pruneOutboundScopes();
     });
     scopeState.chain = tracked.then(() => undefined, () => undefined);
     return await tracked;
@@ -1031,9 +1048,16 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
     const decision = parseTurnDecisionCallbackData(rawData);
     const stopRequested = isTurnRunningStopCallbackData(rawData);
+    const runningQuoteRequested = isTurnRunningQuoteCallbackData(rawData);
     const sessionPick = parseTelegramSessionPickCallbackData(rawData);
     const projectPick = parseTelegramProjectPickCallbackData(rawData);
-    if (!decision && !stopRequested && !sessionPick && !projectPick) {
+    if (
+      !decision &&
+      !stopRequested &&
+      !runningQuoteRequested &&
+      !sessionPick &&
+      !projectPick
+    ) {
       logTelegramDebug("callback_query.ignored_unrecognized_data", {
         callbackId: redactValue(callbackId),
       });
@@ -1056,6 +1080,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       chatId,
       text: stopRequested
         ? "/stop"
+        : runningQuoteRequested
+          ? "/running"
         : sessionPick
           ? "/session-pick"
           : projectPick
@@ -1107,6 +1133,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       callbackId,
       stopRequested
         ? "已请求 stop"
+        : runningQuoteRequested
+          ? "已定位 running 对话"
         : decision
           ? decision.action === "steer"
             ? "已选择 steer"

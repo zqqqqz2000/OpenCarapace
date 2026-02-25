@@ -86,12 +86,37 @@ export async function runGateway(options?: { configPath?: string }): Promise<voi
     },
   });
 
-  const stop = async () => {
-    await gateway.stop();
-    server.stop(true);
+  let shuttingDown = false;
+  let forcedExitCode = 0;
+  const shutdown = async (signal: "SIGINT" | "SIGTERM"): Promise<void> => {
+    if (shuttingDown) {
+      process.exit(signal === "SIGINT" ? 130 : 143);
+      return;
+    }
+    shuttingDown = true;
+    const timeout = setTimeout(() => {
+      process.exit(forcedExitCode || 1);
+    }, 3000);
+    timeout.unref?.();
+    try {
+      await gateway.stop();
+    } catch (error) {
+      forcedExitCode = 1;
+      console.error(
+        `gateway shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      server.stop(true);
+      clearTimeout(timeout);
+    }
+    process.exit(forcedExitCode);
   };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
 
   console.log(`open-carapace channel gateway running on :${port}`);
   console.log(`active channels: ${channels.map((channel) => channel.id).join(", ")}`);

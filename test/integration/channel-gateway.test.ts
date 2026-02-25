@@ -25,6 +25,7 @@ import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
 import {
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_TOKEN,
+  TURN_RUNNING_QUOTE_CALLBACK,
   TURN_RUNNING_STOP_CALLBACK,
   parseTurnDecisionCallbackData,
 } from "../../src/channels/turn-decision.js";
@@ -353,9 +354,13 @@ describe("ChannelGateway", () => {
             }
           | undefined;
         const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
-        return rows.some((row) =>
+        const hasStop = rows.some((row) =>
           row.some((button) => button.callback_data === TURN_RUNNING_STOP_CALLBACK),
         );
+        const hasQuote = rows.some((row) =>
+          row.some((button) => button.callback_data === TURN_RUNNING_QUOTE_CALLBACK),
+        );
+        return hasStop && hasQuote;
       }),
     ).toBeTrue();
     expect(adapter.sent.some((message) => message.text.includes("结果"))).toBeTrue();
@@ -411,6 +416,48 @@ describe("ChannelGateway", () => {
 
     expect(adapter.sent.some((message) => message.text.includes("Available commands"))).toBeTrue();
     expect(adapter.edited.length).toBe(0);
+  });
+
+  test("switches conversation to new session after /new and keeps old history", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const orchestrator = createDeterministicOrchestrator();
+
+    const gateway = new ChannelGateway({
+      orchestrator,
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const first = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-new-switch",
+      messageId: "s1",
+      text: "old-turn",
+    });
+
+    const created = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-new-switch",
+      messageId: "s2",
+      text: "/new",
+    });
+    expect(created.finalText).toContain("Started a new session.");
+    expect(created.sessionId).not.toBe(first.sessionId);
+
+    const afterNew = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-new-switch",
+      messageId: "s3",
+      text: "new-turn",
+    });
+    expect(afterNew.sessionId).toBe(created.sessionId);
+
+    expect(orchestrator.sessions.snapshot(first.sessionId)?.messages.length).toBe(2);
+    expect(orchestrator.sessions.snapshot(afterNew.sessionId)?.messages.length).toBe(2);
   });
 
   test("shows steer/stack choices when new non-command input arrives during a running turn", async () => {

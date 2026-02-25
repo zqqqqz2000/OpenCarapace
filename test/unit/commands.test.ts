@@ -292,24 +292,31 @@ describe("ConversationCommandService", () => {
     expect(status.finalText).toContain("- codexContextUsage: 76561 used (limit unknown)");
   });
 
-  test("clears codex and claude session bindings on /new", () => {
+  test("creates a new empty session on /new and keeps previous session intact", () => {
     const { service, sessions } = createServiceBundle();
     sessions.setMetadata("s-reset", "claude-code", {
       codex_thread_id: "thread-x",
       claude_session_id: "00000000-0000-4000-8000-000000000001",
     });
 
-    const reset = service.execute({
+    const created = service.execute({
       sessionId: "s-reset",
       currentAgentId: "claude-code",
       input: "/new",
     });
-    expect(reset.handled).toBeTrue();
-    expect(reset.finalText).toContain("claudeConversation: cleared");
+    expect(created.handled).toBeTrue();
+    expect(created.finalText).toContain("Started a new session.");
+    expect(typeof created.sessionId).toBe("string");
+    expect(created.sessionId).not.toBe("s-reset");
 
-    const metadata = sessions.getMetadata("s-reset");
-    expect(metadata.codex_thread_id).toBe("");
-    expect(metadata.claude_session_id).toBe("");
+    const previousMetadata = sessions.getMetadata("s-reset");
+    expect(previousMetadata.codex_thread_id).toBe("thread-x");
+    expect(previousMetadata.claude_session_id).toBe("00000000-0000-4000-8000-000000000001");
+
+    const nextId = String(created.sessionId ?? "");
+    const nextMetadata = sessions.getMetadata(nextId);
+    expect(nextMetadata.codex_thread_id).toBe("");
+    expect(nextMetadata.claude_session_id).toBe("");
   });
 
   test("stops running turn by /stop", () => {
@@ -328,6 +335,17 @@ describe("ConversationCommandService", () => {
     expect(result.handled).toBeTrue();
     expect(result.finalText).toContain("Stop signal sent.");
     expect(cancelCalls).toBe(1);
+  });
+
+  test("treats /reset as unknown command", () => {
+    const service = createService();
+    const result = service.execute({
+      sessionId: "s-reset-removed",
+      currentAgentId: "codex",
+      input: "/reset",
+    });
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Unknown command: /reset");
   });
 
   test("returns no-running message when /stop cannot cancel", () => {
@@ -381,6 +399,28 @@ describe("ConversationCommandService", () => {
 
     expect(result.handled).toBeTrue();
     expect(result.finalText).toContain("⟳ ");
+  });
+
+  test("quotes current running session by /running", () => {
+    const { service, sessions } = createServiceBundle({
+      isSessionRunning: (sessionId) => sessionId === "s-running-quote",
+    });
+    sessions.appendMessage("s-running-quote", "codex", {
+      role: "user",
+      content: "定位线上支付超时根因",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "s-running-quote",
+      currentAgentId: "codex",
+      input: "/running",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Running quote:");
+    expect(result.finalText).toContain('"定位线上支付超时根因"');
+    expect(result.finalText).toContain("session=s-running-quote");
   });
 
   test("clips overly long session name in /sessions output", () => {

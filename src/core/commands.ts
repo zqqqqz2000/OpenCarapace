@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentRegistry } from "./agent.js";
 import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
 import {
@@ -28,7 +29,10 @@ export type CommandExecutionResult = {
   handled: boolean;
   finalText?: string;
   agentId?: AgentId;
+  sessionId?: string;
 };
+
+const SESSION_BRANCH_DELIMITER = "::";
 
 function parseNumber(value: string | undefined, fallback: number, min = 1, max = 100): number {
   const n = Number(value ?? "");
@@ -363,6 +367,19 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   };
 }
 
+function stripSessionBranchSuffix(sessionId: string): string {
+  const normalized = sessionId.trim();
+  const markerIndex = normalized.indexOf(SESSION_BRANCH_DELIMITER);
+  if (markerIndex <= 0) {
+    return normalized;
+  }
+  return normalized.slice(0, markerIndex);
+}
+
+function buildDerivedSessionId(baseSessionId: string): string {
+  return `${baseSessionId}${SESSION_BRANCH_DELIMITER}${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+}
+
 export type ConversationCommandServiceDeps = {
   registry: AgentRegistry;
   sessions: SessionManager;
@@ -427,30 +444,7 @@ export class ConversationCommandService {
       case "interrupt":
         return this.stopTurnText(params.sessionId, params.currentAgentId);
       case "new":
-      case "reset": {
-        const next = this.deps.sessions.reset(params.sessionId, params.currentAgentId);
-        const memory = this.getMemorySkill();
-        if (memory) {
-          memory.clearSession(params.sessionId);
-        }
-        this.deps.sessions.setMetadata(params.sessionId, next.agentId, {
-          codex_thread_id: "",
-          claude_session_id: "",
-          session_name: "",
-          session_name_source: "",
-        });
-        return {
-          handled: true,
-          finalText: [
-            "Session reset complete.",
-            `- session: ${next.id}`,
-            `- agent: ${next.agentId}`,
-            "- codexThread: cleared",
-            "- claudeConversation: cleared",
-          ].join("\n"),
-          agentId: next.agentId,
-        };
-      }
+        return this.startNewSession(params.sessionId, params.currentAgentId);
       case "history": {
         const limit = parseNumber(args[0], 12, 1, 50);
         return {
@@ -463,6 +457,13 @@ export class ConversationCommandService {
         return {
           handled: true,
           finalText: this.sessionsText(params.sessionId),
+          agentId: params.currentAgentId,
+        };
+      }
+      case "running": {
+        return {
+          handled: true,
+          finalText: this.runningText(params.sessionId),
           agentId: params.currentAgentId,
         };
       }
@@ -538,9 +539,10 @@ export class ConversationCommandService {
       "- /help: show command list",
       "- /status: show current conversation status",
       "- /stop: interrupt current running turn in this session",
-      "- /new or /reset: clear current session messages",
+      "- /new: keep current session and switch to a new empty session",
       "- /history [n]: show last n messages (default 12)",
       "- /sessions: list recent sessions",
+      '- /running: quick quote current session (for locating running turn)',
       "- /project: show current project and open picker in Telegram",
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/claude-code)",
@@ -625,6 +627,38 @@ export class ConversationCommandService {
     };
   }
 
+  private startNewSession(currentSessionId: string, currentAgentId: AgentId): CommandExecutionResult {
+    const normalizedCurrentId = currentSessionId.trim();
+    const baseSessionId = stripSessionBranchSuffix(normalizedCurrentId) || normalizedCurrentId;
+
+    let nextSessionId = buildDerivedSessionId(baseSessionId);
+    let attempts = 0;
+    while (this.deps.sessions.snapshot(nextSessionId) && attempts < 5) {
+      nextSessionId = buildDerivedSessionId(baseSessionId);
+      attempts += 1;
+    }
+
+    const next = this.deps.sessions.ensure(nextSessionId, currentAgentId);
+    this.deps.sessions.setMetadata(next.id, next.agentId, {
+      codex_thread_id: "",
+      claude_session_id: "",
+      session_name: "",
+      session_name_source: "",
+    });
+
+    return {
+      handled: true,
+      sessionId: next.id,
+      finalText: [
+        "Started a new session.",
+        `- previous: ${normalizedCurrentId}`,
+        `- session: ${next.id}`,
+        `- agent: ${next.agentId}`,
+      ].join("\n"),
+      agentId: next.agentId,
+    };
+  }
+
   private historyText(sessionId: string, limit: number): string {
     const session = this.deps.sessions.snapshot(sessionId);
     if (!session || session.messages.length === 0) {
@@ -669,6 +703,20 @@ export class ConversationCommandService {
       heading.push(`- project: ${decodeChannelSessionProjectKey(scopedProjectKey)}`);
     }
     return [...heading, ...rows].join("\n");
+  }
+
+  private runningText(sessionId: string): string {
+    const session = this.deps.sessions.snapshot(sessionId);
+    const displayName = session ? resolveSessionDisplayName(session) : "New Session";
+    const quotedName = clipSessionListName(displayName, 60).replace(/"/g, "“");
+    const running = this.deps.isSessionRunning?.(sessionId) === true;
+    const scopedProjectKey = resolveSessionProjectKey(sessionId);
+    const projectPart = scopedProjectKey
+      ? `, project=${decodeChannelSessionProjectKey(scopedProjectKey)}`
+      : "";
+    return running
+      ? `Running quote: "${quotedName}" (session=${sessionId}${projectPart})`
+      : `No running turn in current session: "${quotedName}" (session=${sessionId}${projectPart})`;
   }
 
   private projectText(sessionId: string, requestedProjectRaw: string | undefined): string {

@@ -31,6 +31,7 @@ import {
   TURN_DECISION_META_BYPASS,
   TURN_DECISION_META_FORCE_STEER,
   TURN_DECISION_META_TOKEN,
+  TURN_RUNNING_QUOTE_CALLBACK,
   TURN_RUNNING_STOP_CALLBACK,
   buildTurnDecisionCallbackData,
 } from "./turn-decision.js";
@@ -52,6 +53,7 @@ const TELEGRAM_SESSION_PICK_MAX_ITEMS = 20;
 const TELEGRAM_PROJECT_PICK_TTL_MS = 30 * 60 * 1000;
 const TELEGRAM_PROJECT_PICK_PAGE_SIZE = 8;
 const RUNNING_ANIMATION_INTERVAL_MS = 500;
+const SESSION_BRANCH_DELIMITER = "::";
 const RUNNING_ANIMATION_FRAMES = [
   "🌑",
   "🌒",
@@ -274,6 +276,13 @@ function resolveSessionProjectKey(sessionId: string): string {
   return parseChannelSessionId(sessionId)?.projectKey ?? DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
 }
 
+function matchesConversationSessionKey(candidate: string, conversationKey: string): boolean {
+  return (
+    candidate === conversationKey ||
+    candidate.startsWith(`${conversationKey}${SESSION_BRANCH_DELIMITER}`)
+  );
+}
+
 function cloneMetadata(metadata: unknown): Record<string, unknown> {
   if (!isRecord(metadata)) {
     return {};
@@ -409,9 +418,9 @@ class ChannelTurnRelay {
   }
 
   async finalize(result: ChatTurnResult): Promise<void> {
-    this.stopProgressAnimation();
     this.closed = true;
-    await this.flushDeltaPreview(true);
+    this.deltaBuffer = "";
+    this.stopProgressAnimation(true);
 
     const maxChars = Math.max(300, this.adapter.capabilities.maxMessageChars);
     const fullText =
@@ -457,7 +466,8 @@ class ChannelTurnRelay {
 
   dispose(): void {
     this.closed = true;
-    this.stopProgressAnimation();
+    this.deltaBuffer = "";
+    this.stopProgressAnimation(true);
   }
 
   private enqueueProgressWork(work: () => Promise<void>): void {
@@ -561,6 +571,10 @@ class ChannelTurnRelay {
   }
 
   private async flushDeltaPreview(force: boolean): Promise<void> {
+    if (this.closed) {
+      this.deltaBuffer = "";
+      return;
+    }
     if (!this.deltaBuffer) {
       return;
     }
@@ -580,6 +594,9 @@ class ChannelTurnRelay {
   }
 
   private async sendProgress(text: string): Promise<void> {
+    if (this.closed) {
+      return;
+    }
     const normalized = clipText(compactWhitespace(text), 400);
     if (!normalized) {
       return;
@@ -596,6 +613,9 @@ class ChannelTurnRelay {
     ) {
       try {
         await this.editProgressMessage(rendered);
+        if (this.closed) {
+          return;
+        }
         this.startProgressAnimation();
         return;
       } catch {
@@ -610,6 +630,9 @@ class ChannelTurnRelay {
       this.runningControlMetadata(),
       "progress.send",
     );
+    if (this.closed) {
+      return;
+    }
     this.lastRenderedProgress = rendered;
     if (this.adapter.capabilities.supportsMessageEdit && sent.messageId) {
       this.progressMessageId = sent.messageId;
@@ -626,6 +649,9 @@ class ChannelTurnRelay {
   }
 
   private startProgressAnimation(): void {
+    if (this.closed) {
+      return;
+    }
     if (!this.animationEnabled) {
       return;
     }
@@ -647,16 +673,30 @@ class ChannelTurnRelay {
     }, RUNNING_ANIMATION_INTERVAL_MS);
   }
 
-  private stopProgressAnimation(): void {
+  private stopProgressAnimation(resetState = false): void {
     if (!this.animationTimer) {
+      if (resetState) {
+        this.progressMessageId = undefined;
+        this.lastProgressText = "";
+        this.lastRenderedProgress = "";
+      }
       return;
     }
     clearInterval(this.animationTimer);
     this.animationTimer = undefined;
     this.animationEditing = false;
+    if (resetState) {
+      this.progressMessageId = undefined;
+      this.lastProgressText = "";
+      this.lastRenderedProgress = "";
+    }
   }
 
   private async tickProgressAnimation(): Promise<void> {
+    if (this.closed) {
+      this.stopProgressAnimation(true);
+      return;
+    }
     if (
       !this.lastProgressText ||
       !this.progressMessageId ||
@@ -683,7 +723,7 @@ class ChannelTurnRelay {
   }
 
   private async editProgressMessage(text: string): Promise<void> {
-    if (!this.progressMessageId || !this.adapter.editMessage) {
+    if (this.closed || !this.progressMessageId || !this.adapter.editMessage) {
       return;
     }
     if (text === this.lastRenderedProgress) {
@@ -735,6 +775,10 @@ class ChannelTurnRelay {
             {
               text: "🛑 Stop",
               callback_data: TURN_RUNNING_STOP_CALLBACK,
+            },
+            {
+              text: "📌 Quote",
+              callback_data: TURN_RUNNING_QUOTE_CALLBACK,
             },
           ],
         ],
@@ -822,6 +866,10 @@ export class ChannelGateway {
     PendingTelegramProjectPick
   >();
   private readonly activeProjectsByConversation = new Map<string, string>();
+  private readonly activeSessionsByConversation = new Map<string, string>();
+  private readonly activeRelays = new Set<ChannelTurnRelay>();
+  private readonly activeSessionIds = new Set<string>();
+  private stopping = false;
   private readonly projectRootDir: string | undefined;
 
   constructor(deps: ChannelGatewayDeps) {
@@ -839,6 +887,7 @@ export class ChannelGateway {
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     const handler: ChannelInboundHandler = async (message) => {
       await this.handleInbound(message);
     };
@@ -851,6 +900,13 @@ export class ChannelGateway {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    for (const sessionId of this.activeSessionIds) {
+      this.orchestrator.cancelRunningTurn(sessionId, "gateway stopping");
+    }
+    for (const relay of this.activeRelays) {
+      relay.dispose();
+    }
     for (const channel of this.registry.list()) {
       if (channel.stop) {
         await channel.stop();
@@ -862,9 +918,14 @@ export class ChannelGateway {
     const channel = this.registry.require(message.channelId);
     const conversationKey = buildChannelConversationKey(message);
     const activeProjectKey = this.resolveActiveProjectKey(conversationKey, message);
-    const defaultSessionId = buildChannelSessionId(message, {
+    const fallbackSessionId = buildChannelSessionId(message, {
       projectKey: activeProjectKey,
     });
+    const defaultSessionId = this.resolveActiveSessionId(
+      conversationKey,
+      message,
+      activeProjectKey,
+    );
     const agentId = this.resolveAgentId(message.channelId);
     logGatewayDebug("gateway.inbound.received", {
       channelId: message.channelId,
@@ -875,6 +936,7 @@ export class ChannelGateway {
       textChars: message.text.length,
       isCommand: looksLikeSlashCommand(message.text),
       defaultSessionId,
+      fallbackSessionId,
       agentId,
     });
     const projectPickToken = readTelegramProjectPickToken(message.metadata);
@@ -900,8 +962,17 @@ export class ChannelGateway {
     }
 
     const sessionId = readTelegramSessionPickSessionId(message.metadata) ?? defaultSessionId;
+    if (this.stopping) {
+      logGatewayDebug("gateway.inbound.ignored_stopping", {
+        channelId: message.channelId,
+        chatId: redactValue(message.chatId),
+        sessionId,
+      });
+      return this.emptyTurnResult(agentId, sessionId);
+    }
     const sessionProjectKey = resolveSessionProjectKey(sessionId);
     this.activeProjectsByConversation.set(conversationKey, sessionProjectKey);
+    this.activeSessionsByConversation.set(conversationKey, sessionId);
     const selectedSessionName = readTelegramSessionPickSessionName(message.metadata);
     const turnDecision = readTurnDecisionSelection(message.metadata);
     if (turnDecision) {
@@ -933,6 +1004,8 @@ export class ChannelGateway {
     }
 
     const relay = new ChannelTurnRelay(channel, message);
+    this.activeRelays.add(relay);
+    this.activeSessionIds.add(sessionId);
     const steerTriggered =
       !isCommandMessage &&
       shouldForceSteer(message.metadata) &&
@@ -986,10 +1059,18 @@ export class ChannelGateway {
             selectedSessionName,
           )
         : result;
+      const effectiveSessionId = decorated.sessionId || sessionId;
+      if (effectiveSessionId !== sessionId) {
+        this.activeSessionsByConversation.set(conversationKey, effectiveSessionId);
+        this.activeProjectsByConversation.set(
+          conversationKey,
+          resolveSessionProjectKey(effectiveSessionId),
+        );
+      }
       logGatewayDebug("gateway.turn.completed", {
         channelId: message.channelId,
         chatId: redactValue(message.chatId),
-        sessionId,
+        sessionId: effectiveSessionId,
         agentId,
         finalTextChars: decorated.finalText.length,
       });
@@ -1049,6 +1130,8 @@ export class ChannelGateway {
       throw error;
     } finally {
       relay.dispose();
+      this.activeRelays.delete(relay);
+      this.activeSessionIds.delete(sessionId);
     }
   }
 
@@ -1215,6 +1298,7 @@ export class ChannelGateway {
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
     this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
+    this.activeSessionsByConversation.delete(params.conversationKey);
     const projectName = decodeChannelSessionProjectKey(nextProjectKey);
     await this.sendAuxiliaryMessage(
       params.channel,
@@ -1553,6 +1637,29 @@ export class ChannelGateway {
     return resolved;
   }
 
+  private resolveActiveSessionId(
+    conversationKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+    projectKey: string,
+  ): string {
+    const active = this.activeSessionsByConversation.get(conversationKey);
+    if (active && resolveSessionProjectKey(active) === projectKey) {
+      return active;
+    }
+    const inferred = this.inferLatestSessionForConversation(
+      conversationKey,
+      projectKey,
+      message,
+    );
+    const resolved =
+      inferred ??
+      buildChannelSessionId(message, {
+        projectKey,
+      });
+    this.activeSessionsByConversation.set(conversationKey, resolved);
+    return resolved;
+  }
+
   private inferLatestProjectForConversation(
     conversationKey: string,
     message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
@@ -1561,11 +1668,35 @@ export class ChannelGateway {
     const fallbackProject = resolveSessionProjectKey(fallbackSessionId);
     for (const session of this.orchestrator.sessions.list()) {
       const parsed = parseChannelSessionId(session.id);
-      if (parsed && parsed.conversationKey === conversationKey) {
+      if (parsed && matchesConversationSessionKey(parsed.conversationKey, conversationKey)) {
         return parsed.projectKey;
       }
       if (!parsed && session.id === fallbackSessionId) {
         return fallbackProject;
+      }
+    }
+    return undefined;
+  }
+
+  private inferLatestSessionForConversation(
+    conversationKey: string,
+    projectKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+  ): string | undefined {
+    const fallbackSessionId = buildChannelSessionId(message, {
+      projectKey,
+    });
+    for (const session of this.orchestrator.sessions.list()) {
+      const parsed = parseChannelSessionId(session.id);
+      if (
+        parsed &&
+        parsed.projectKey === projectKey &&
+        matchesConversationSessionKey(parsed.conversationKey, conversationKey)
+      ) {
+        return session.id;
+      }
+      if (!parsed && session.id === fallbackSessionId) {
+        return session.id;
       }
     }
     return undefined;

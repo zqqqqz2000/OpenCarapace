@@ -66,6 +66,7 @@ describe("Codex session title generator", () => {
     const args = JSON.parse(fs.readFileSync(callLogPath, "utf-8")) as string[];
     expect(args).toContain("exec");
     expect(args).toContain("--json");
+    expect(args).toContain("--skip-git-repo-check");
     expect(args).toContain("--sandbox");
     expect(args).toContain("read-only");
     expect(args).not.toContain("resume");
