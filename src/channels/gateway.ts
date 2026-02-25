@@ -91,6 +91,30 @@ function compactWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function redactValue(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (value.length <= 8) {
+    return value;
+  }
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
+
+function logGatewayDebug(event: string, payload: Record<string, unknown>): void {
+  const record = {
+    ts: new Date().toISOString(),
+    scope: "channel.gateway",
+    event,
+    ...payload,
+  };
+  try {
+    console.log(JSON.stringify(record));
+  } catch {
+    // Logging must never change runtime behavior.
+  }
+}
+
 function splitOutboundText(text: string, maxChars: number): string[] {
   const normalizedMax = Math.max(200, maxChars);
   const normalized = text.replace(/\r/g, "").trim();
@@ -394,24 +418,40 @@ class ChannelTurnRelay {
       typeof result.rawFinalText === "string"
         ? result.rawFinalText.replace(/\r/g, "").trim()
         : "";
+    logGatewayDebug("relay.finalize.start", {
+      channelId: this.adapter.id,
+      chatId: redactValue(this.inbound.chatId),
+      threadId: redactValue(this.inbound.threadId),
+      messageId: redactValue(this.inbound.messageId),
+      maxChars,
+      finalTextChars: result.finalText.length,
+      rawFinalTextChars: fullText.length,
+      hasSendFile: Boolean(this.adapter.sendFile),
+    });
     if (this.adapter.sendFile && fullText) {
       if (fullText.length <= maxChars) {
-        await this.sendText(fullText);
+        await this.sendText(fullText, undefined, "final.full_text");
         return;
       }
-      await this.sendText(clipTextFromTop(fullText, maxChars));
+      await this.sendText(clipTextFromTop(fullText, maxChars), undefined, "final.clipped");
       await this.sendFullTextAttachment(fullText);
       return;
     }
 
     const chunks = splitOutboundText(result.finalText, maxChars);
     if (chunks.length === 0) {
-      await this.sendText("暂无可读结果，请重试。");
+      await this.sendText("暂无可读结果，请重试。", undefined, "final.empty_fallback");
       return;
     }
 
+    logGatewayDebug("relay.finalize.chunks", {
+      channelId: this.adapter.id,
+      chatId: redactValue(this.inbound.chatId),
+      chunkCount: chunks.length,
+      firstChunkChars: chunks[0]?.length ?? 0,
+    });
     for (const chunk of chunks) {
-      await this.sendText(chunk);
+      await this.sendText(chunk, undefined, "final.chunk");
     }
   }
 
@@ -456,7 +496,32 @@ class ChannelTurnRelay {
     if (this.inbound.messageId) {
       attachment.replyToMessageId = this.inbound.messageId;
     }
-    await this.adapter.sendFile(attachment);
+    const startedAt = Date.now();
+    logGatewayDebug("relay.send_attachment.attempt", {
+      channelId: this.adapter.id,
+      chatId: redactValue(this.inbound.chatId),
+      threadId: redactValue(this.inbound.threadId),
+      replyToMessageId: redactValue(this.inbound.messageId),
+      fileName: attachment.fileName,
+      contentChars: fullText.length,
+    });
+    try {
+      const receipt = await this.adapter.sendFile(attachment);
+      logGatewayDebug("relay.send_attachment.succeeded", {
+        channelId: this.adapter.id,
+        chatId: redactValue(this.inbound.chatId),
+        messageId: redactValue(receipt.messageId),
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      logGatewayDebug("relay.send_attachment.failed", {
+        channelId: this.adapter.id,
+        chatId: redactValue(this.inbound.chatId),
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   private async handleStatus(
@@ -540,7 +605,11 @@ class ChannelTurnRelay {
       }
     }
 
-    const sent = await this.sendText(rendered, this.runningControlMetadata());
+    const sent = await this.sendText(
+      rendered,
+      this.runningControlMetadata(),
+      "progress.send",
+    );
     this.lastRenderedProgress = rendered;
     if (this.adapter.capabilities.supportsMessageEdit && sent.messageId) {
       this.progressMessageId = sent.messageId;
@@ -595,6 +664,9 @@ class ChannelTurnRelay {
     ) {
       return;
     }
+    if (this.adapter.isOutboundBusy?.(this.inbound.chatId)) {
+      return;
+    }
     if (this.animationEditing) {
       return;
     }
@@ -633,7 +705,19 @@ class ChannelTurnRelay {
     if (metadata) {
       edit.metadata = metadata;
     }
-    await this.adapter.editMessage(edit);
+    try {
+      await this.adapter.editMessage(edit);
+    } catch (error) {
+      logGatewayDebug("relay.progress.edit_failed", {
+        channelId: this.adapter.id,
+        chatId: redactValue(this.inbound.chatId),
+        threadId: redactValue(this.inbound.threadId),
+        messageId: redactValue(this.progressMessageId),
+        textChars: text.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     this.lastRenderedProgress = text;
   }
 
@@ -661,6 +745,7 @@ class ChannelTurnRelay {
   private async sendText(
     text: string,
     metadata?: Record<string, unknown>,
+    reason = "generic",
   ): Promise<{ messageId?: string }> {
     const outbound: ChannelOutboundMessage = {
       channelId: this.adapter.id,
@@ -679,7 +764,36 @@ class ChannelTurnRelay {
     if (this.inbound.messageId) {
       outbound.replyToMessageId = this.inbound.messageId;
     }
-    return await this.adapter.sendMessage(outbound);
+    const startedAt = Date.now();
+    logGatewayDebug("relay.send_text.attempt", {
+      reason,
+      channelId: this.adapter.id,
+      chatId: redactValue(this.inbound.chatId),
+      threadId: redactValue(this.inbound.threadId),
+      replyToMessageId: redactValue(this.inbound.messageId),
+      textChars: text.length,
+      hasMetadata: Boolean(metadata),
+    });
+    try {
+      const receipt = await this.adapter.sendMessage(outbound);
+      logGatewayDebug("relay.send_text.succeeded", {
+        reason,
+        channelId: this.adapter.id,
+        chatId: redactValue(this.inbound.chatId),
+        messageId: redactValue(receipt.messageId),
+        durationMs: Date.now() - startedAt,
+      });
+      return receipt;
+    } catch (error) {
+      logGatewayDebug("relay.send_text.failed", {
+        reason,
+        channelId: this.adapter.id,
+        chatId: redactValue(this.inbound.chatId),
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 }
 
@@ -752,6 +866,17 @@ export class ChannelGateway {
       projectKey: activeProjectKey,
     });
     const agentId = this.resolveAgentId(message.channelId);
+    logGatewayDebug("gateway.inbound.received", {
+      channelId: message.channelId,
+      chatId: redactValue(message.chatId),
+      threadId: redactValue(message.threadId),
+      messageId: redactValue(message.messageId),
+      replyToMessageId: redactValue(message.replyToMessageId),
+      textChars: message.text.length,
+      isCommand: looksLikeSlashCommand(message.text),
+      defaultSessionId,
+      agentId,
+    });
     const projectPickToken = readTelegramProjectPickToken(message.metadata);
     if (projectPickToken) {
       return await this.handleTelegramProjectPickSelection({
@@ -861,6 +986,13 @@ export class ChannelGateway {
             selectedSessionName,
           )
         : result;
+      logGatewayDebug("gateway.turn.completed", {
+        channelId: message.channelId,
+        chatId: redactValue(message.chatId),
+        sessionId,
+        agentId,
+        finalTextChars: decorated.finalText.length,
+      });
       await relay.finalize(decorated);
       if (channel.id === "telegram" && isSessionsCommandText(message.text)) {
         await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
@@ -876,10 +1008,23 @@ export class ChannelGateway {
       return decorated;
     } catch (error) {
       if (isTurnAbortedError(error)) {
+        logGatewayDebug("gateway.turn.aborted", {
+          channelId: message.channelId,
+          chatId: redactValue(message.chatId),
+          sessionId,
+          agentId,
+        });
         return this.emptyTurnResult(agentId, sessionId);
       }
 
       const reason = error instanceof Error ? error.message : String(error);
+      logGatewayDebug("gateway.turn.failed", {
+        channelId: message.channelId,
+        chatId: redactValue(message.chatId),
+        sessionId,
+        agentId,
+        error: reason,
+      });
       const failure: ChannelOutboundMessage = {
         channelId: channel.id,
         chatId: message.chatId,

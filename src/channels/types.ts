@@ -77,6 +77,7 @@ export interface ChannelAdapter {
   readonly capabilities: ChannelCapabilities;
   start?(handler: ChannelInboundHandler): Promise<void>;
   stop?(): Promise<void>;
+  isOutboundBusy?(chatId?: string): boolean;
   sendMessage(message: ChannelOutboundMessage): Promise<ChannelSendReceipt>;
   editMessage?(message: ChannelEditMessage): Promise<ChannelSendReceipt>;
   sendFile?(attachment: ChannelFileAttachment): Promise<ChannelSendReceipt>;

@@ -31,6 +31,10 @@ type TelegramApiEnvelope<T> = {
   ok: boolean;
   result?: T;
   description?: string;
+  error_code?: number;
+  parameters?: {
+    retry_after?: number | string;
+  };
 };
 
 type TelegramBotCommand = {
@@ -116,6 +120,13 @@ type DownloadedTelegramAttachments = {
   errors: string[];
 };
 
+type TelegramOutboundScopeState = {
+  chain: Promise<void>;
+  lastOutboundAt: number;
+  rateLimitedUntilAt: number;
+  pendingCount: number;
+};
+
 type TelegramCallbackQuery = {
   id: string;
   from?: TelegramUser;
@@ -142,6 +153,194 @@ export type TelegramChannelAdapterOptions = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const TELEGRAM_OUTBOUND_MIN_INTERVAL_MS = 1200;
+const TELEGRAM_RATE_LIMIT_FALLBACK_RETRY_SECONDS = 1;
+const TELEGRAM_RATE_LIMIT_MAX_ATTEMPTS = 5;
+const TELEGRAM_RATE_LIMIT_JITTER_MIN = 0.5;
+const TELEGRAM_RATE_LIMIT_JITTER_MAX = 1.5;
+
+class TelegramRateLimitError extends Error {
+  readonly method: string;
+  readonly retryAfterSeconds: number;
+  readonly status: number | undefined;
+
+  constructor(params: {
+    method: string;
+    retryAfterSeconds: number;
+    status?: number;
+    description?: string;
+  }) {
+    const suffix = params.description ? `: ${params.description}` : "";
+    super(
+      `telegram api rate limited (${params.method}): retry_after=${params.retryAfterSeconds}${suffix}`,
+    );
+    this.name = "TelegramRateLimitError";
+    this.method = params.method;
+    this.retryAfterSeconds = params.retryAfterSeconds;
+    this.status = params.status;
+  }
+}
+
+function redactValue(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (value.length <= 8) {
+    return value;
+  }
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
+
+function parseRetryAfterFromErrorEnvelope(value: unknown): number | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const parameters = value.parameters;
+  if (!isRecord(parameters)) {
+    return undefined;
+  }
+  const retryAfter = parameters.retry_after;
+  if (typeof retryAfter === "number" && Number.isFinite(retryAfter)) {
+    return Math.max(0, Math.floor(retryAfter));
+  }
+  if (typeof retryAfter === "string" && retryAfter.trim()) {
+    const parsed = Number(retryAfter);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return undefined;
+}
+
+function parseRetryAfterFromHeader(value: string | null): number | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const parsedSeconds = Number(normalized);
+  if (Number.isFinite(parsedSeconds)) {
+    return Math.max(0, Math.floor(parsedSeconds));
+  }
+  const parsedDateMs = Date.parse(normalized);
+  if (Number.isFinite(parsedDateMs)) {
+    return Math.max(0, Math.ceil((parsedDateMs - Date.now()) / 1000));
+  }
+  return undefined;
+}
+
+function parseErrorCodeFromErrorEnvelope(value: unknown): number | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const code = value.error_code;
+  if (typeof code === "number" && Number.isFinite(code)) {
+    return Math.floor(code);
+  }
+  if (typeof code === "string" && code.trim()) {
+    const parsed = Number(code);
+    if (Number.isFinite(parsed)) {
+      return Math.floor(parsed);
+    }
+  }
+  return undefined;
+}
+
+function parseDescriptionFromErrorEnvelope(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const description = value.description;
+  if (typeof description === "string" && description.trim()) {
+    return description.trim();
+  }
+  return undefined;
+}
+
+function parseTelegramHttpErrorBody(
+  bodyText: string,
+): {
+  errorCode?: number;
+  description?: string;
+  retryAfterSeconds?: number;
+  bodyPreview?: string;
+} {
+  const trimmed = bodyText.trim();
+  if (!trimmed) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const errorCode = parseErrorCodeFromErrorEnvelope(parsed);
+    const description = parseDescriptionFromErrorEnvelope(parsed);
+    const retryAfterSeconds = parseRetryAfterFromErrorEnvelope(parsed);
+    const output: {
+      errorCode?: number;
+      description?: string;
+      retryAfterSeconds?: number;
+      bodyPreview?: string;
+    } = {};
+    if (errorCode !== undefined) {
+      output.errorCode = errorCode;
+    }
+    if (description !== undefined) {
+      output.description = description;
+    }
+    if (retryAfterSeconds !== undefined) {
+      output.retryAfterSeconds = retryAfterSeconds;
+    }
+    return output;
+  } catch {
+    return {
+      bodyPreview: trimmed.slice(0, 300),
+    };
+  }
+}
+
+function logTelegramDebug(
+  event: string,
+  payload: Record<string, unknown>,
+): void {
+  const record = {
+    ts: new Date().toISOString(),
+    scope: "telegram.adapter",
+    event,
+    ...payload,
+  };
+  try {
+    console.log(JSON.stringify(record));
+  } catch {
+    // Logging must never change runtime behavior.
+  }
+}
+
+function resolveRetryAfterSeconds(candidate: number | undefined): number {
+  if (candidate === undefined || !Number.isFinite(candidate) || candidate < 0) {
+    return TELEGRAM_RATE_LIMIT_FALLBACK_RETRY_SECONDS;
+  }
+  return Math.max(1, Math.floor(candidate));
+}
+
+function resolveRetryJitterFactor(): number {
+  const range = TELEGRAM_RATE_LIMIT_JITTER_MAX - TELEGRAM_RATE_LIMIT_JITTER_MIN;
+  return TELEGRAM_RATE_LIMIT_JITTER_MIN + Math.random() * range;
+}
+
+function isTelegramRateLimitError(error: unknown): error is TelegramRateLimitError {
+  return error instanceof TelegramRateLimitError;
+}
+
+function isRateLimitedErrorShape(params: {
+  status: number | undefined;
+  errorCode: number | undefined;
+  retryAfterSeconds: number | undefined;
+}): boolean {
+  return (
+    params.status === 429 ||
+    params.errorCode === 429 ||
+    params.retryAfterSeconds !== undefined
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -390,6 +589,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   private offset = 0;
   private runner: Promise<void> | null = null;
   private abort: AbortController | null = null;
+  private readonly outboundScopes = new Map<string, TelegramOutboundScopeState>();
+  private outboundSequence = 0;
+  private sendMessageSequence = 0;
 
   constructor(options: TelegramChannelAdapterOptions) {
     this.token = options.token.trim();
@@ -402,21 +604,36 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
   async start(handler: ChannelInboundHandler): Promise<void> {
     if (this.running) {
+      logTelegramDebug("adapter.start.skipped_already_running", {});
       return;
     }
+    logTelegramDebug("adapter.start.begin", {
+      pollTimeoutSeconds: this.pollTimeoutSeconds,
+      retryDelayMs: this.retryDelayMs,
+      allowedChatCount: this.allowedChatIds?.size ?? 0,
+    });
 
     try {
       await this.registerBotCommands();
-    } catch {
+    } catch (error) {
+      logTelegramDebug("adapter.start.register_commands_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Best-effort: message polling should continue even if command registration fails.
     }
 
     this.running = true;
     this.abort = new AbortController();
     this.runner = this.runPollLoop(handler, this.abort.signal);
+    logTelegramDebug("adapter.start.completed", {
+      hasAbortController: Boolean(this.abort),
+    });
   }
 
   async stop(): Promise<void> {
+    logTelegramDebug("adapter.stop.begin", {
+      wasRunning: this.running,
+    });
     this.running = false;
     if (this.abort) {
       this.abort.abort();
@@ -425,123 +642,369 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     this.abort = null;
     this.runner = null;
     if (active) {
-      await active.catch(() => {});
+      try {
+        await active;
+      } catch (error) {
+        logTelegramDebug("adapter.stop.runner_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+    logTelegramDebug("adapter.stop.completed", {});
+  }
+
+  isOutboundBusy(chatId?: string): boolean {
+    const now = Date.now();
+    const normalizedScopeKey = chatId?.trim();
+    if (normalizedScopeKey) {
+      const scope = this.outboundScopes.get(normalizedScopeKey);
+      if (!scope) {
+        return false;
+      }
+      return scope.pendingCount > 0 || now < scope.rateLimitedUntilAt;
+    }
+    for (const scope of this.outboundScopes.values()) {
+      if (scope.pendingCount > 0 || now < scope.rateLimitedUntilAt) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private getOutboundScopeState(scopeKey: string): TelegramOutboundScopeState {
+    let state = this.outboundScopes.get(scopeKey);
+    if (!state) {
+      state = {
+        chain: Promise.resolve(),
+        lastOutboundAt: 0,
+        rateLimitedUntilAt: 0,
+        pendingCount: 0,
+      };
+      this.outboundScopes.set(scopeKey, state);
+    }
+    return state;
+  }
+
+  private async reserveOutboundSlot(
+    operation: string,
+    scopeKey: string,
+    outboundSequence: number,
+    state: TelegramOutboundScopeState,
+  ): Promise<{ waitMs: number; reservedAtMs: number }> {
+    const now = Date.now();
+    const minIntervalUntil = state.lastOutboundAt + TELEGRAM_OUTBOUND_MIN_INTERVAL_MS;
+    const blockedUntil = Math.max(minIntervalUntil, state.rateLimitedUntilAt);
+    const waitMs = Math.max(0, blockedUntil - now);
+    logTelegramDebug("outbound.slot.wait", {
+      operation,
+      scopeKey: redactValue(scopeKey),
+      outboundSequence,
+      now,
+      minIntervalUntil,
+      rateLimitedUntilAt: state.rateLimitedUntilAt,
+      waitMs,
+      minIntervalMs: TELEGRAM_OUTBOUND_MIN_INTERVAL_MS,
+    });
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    const reservedAtMs = Date.now();
+    state.lastOutboundAt = reservedAtMs;
+    logTelegramDebug("outbound.slot.reserved", {
+      operation,
+      scopeKey: redactValue(scopeKey),
+      outboundSequence,
+      reservedAtMs,
+    });
+    return {
+      waitMs,
+      reservedAtMs,
+    };
+  }
+
+  private async queueOutboundRequest<T>(
+    operation: string,
+    scopeKey: string,
+    work: (context: { outboundSequence: number; reservedAtMs: number; attempt: number }) => Promise<T>,
+  ): Promise<T> {
+    const outboundSequence = ++this.outboundSequence;
+    const normalizedScopeKey = scopeKey.trim() || "__unknown_chat__";
+    const scopeState = this.getOutboundScopeState(normalizedScopeKey);
+    const run = async () => {
+      let attempt = 0;
+      while (true) {
+        const slot = await this.reserveOutboundSlot(
+          operation,
+          normalizedScopeKey,
+          outboundSequence,
+          scopeState,
+        );
+        attempt += 1;
+        try {
+          const result = await work({
+            outboundSequence,
+            reservedAtMs: slot.reservedAtMs,
+            attempt,
+          });
+          return result;
+        } catch (error) {
+          if (!isTelegramRateLimitError(error)) {
+            throw error;
+          }
+          const telegramRetryAfterSeconds = resolveRetryAfterSeconds(error.retryAfterSeconds);
+          if (attempt >= TELEGRAM_RATE_LIMIT_MAX_ATTEMPTS) {
+            logTelegramDebug("outbound.rate_limited_exhausted", {
+              operation,
+              scopeKey: redactValue(normalizedScopeKey),
+              outboundSequence,
+              attempt,
+              method: error.method,
+              status: error.status,
+              telegramRetryAfterSeconds,
+              maxAttempts: TELEGRAM_RATE_LIMIT_MAX_ATTEMPTS,
+            });
+            throw new Error(
+              `telegram api rate limit retries exhausted (${operation}): attempts=${attempt}`,
+            );
+          }
+          const jitterFactor = resolveRetryJitterFactor();
+          const retryWaitMs = Math.max(
+            0,
+            Math.ceil(telegramRetryAfterSeconds * jitterFactor * 1000),
+          );
+          const retryUntil = Date.now() + retryWaitMs;
+          scopeState.rateLimitedUntilAt = Math.max(scopeState.rateLimitedUntilAt, retryUntil);
+          const effectiveRetryWaitMs = Math.max(0, scopeState.rateLimitedUntilAt - Date.now());
+          const effectiveRetrySeconds = Math.max(1, Math.ceil(effectiveRetryWaitMs / 1000));
+          logTelegramDebug("outbound.rate_limited_retry", {
+            operation,
+            scopeKey: redactValue(normalizedScopeKey),
+            outboundSequence,
+            attempt,
+            method: error.method,
+            status: error.status,
+            policy: "retry_after_jitter",
+            telegramRetryAfterSeconds,
+            jitterFactor,
+            retryAfterSeconds: effectiveRetrySeconds,
+            retryWaitMs: effectiveRetryWaitMs,
+            rateLimitedUntilAt: scopeState.rateLimitedUntilAt,
+          });
+        }
+      }
+    };
+    scopeState.pendingCount += 1;
+    const next = scopeState.chain.then(run, run);
+    const tracked = next.finally(() => {
+      scopeState.pendingCount = Math.max(0, scopeState.pendingCount - 1);
+      if (scopeState.pendingCount === 0 && Date.now() >= scopeState.rateLimitedUntilAt) {
+        this.outboundScopes.delete(normalizedScopeKey);
+      }
+    });
+    scopeState.chain = tracked.then(() => undefined, () => undefined);
+    return await tracked;
   }
 
   async sendMessage(message: ChannelOutboundMessage): Promise<ChannelSendReceipt> {
-    const payload: Record<string, unknown> = {
-      chat_id: message.chatId,
-      text: message.text,
-      disable_web_page_preview: true,
-    };
-    const parseMode = resolveTelegramParseMode(message.metadata);
-    if (parseMode) {
-      payload.parse_mode = parseMode;
-    }
-    const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
-    payload.reply_markup = replyMarkup ?? buildDefaultReplyKeyboardMarkup();
+    const sequence = ++this.sendMessageSequence;
+    logTelegramDebug("sendMessage.attempt", {
+      sequence,
+      chatId: redactValue(message.chatId),
+      threadId: redactValue(message.threadId),
+      replyToMessageId: redactValue(message.replyToMessageId),
+      textChars: message.text.length,
+      hasMetadata: Boolean(message.metadata),
+    });
+    return await this.queueOutboundRequest("sendMessage", message.chatId, async ({ reservedAtMs, attempt }) => {
+      const payload: Record<string, unknown> = {
+        chat_id: message.chatId,
+        text: message.text,
+        disable_web_page_preview: true,
+      };
+      const parseMode = resolveTelegramParseMode(message.metadata);
+      if (parseMode) {
+        payload.parse_mode = parseMode;
+      }
+      const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
+      payload.reply_markup = replyMarkup ?? buildDefaultReplyKeyboardMarkup();
 
-    const replyTo = normalizeOptionalInt(message.replyToMessageId);
-    if (replyTo !== undefined) {
-      payload.reply_to_message_id = replyTo;
-    }
+      const replyTo = normalizeOptionalInt(message.replyToMessageId);
+      if (replyTo !== undefined) {
+        payload.reply_to_message_id = replyTo;
+      }
 
-    const threadId = normalizeOptionalInt(message.threadId);
-    if (threadId !== undefined) {
-      payload.message_thread_id = threadId;
-    }
+      const threadId = normalizeOptionalInt(message.threadId);
+      if (threadId !== undefined) {
+        payload.message_thread_id = threadId;
+      }
 
-    const response = await this.callApi<TelegramMessage>("sendMessage", payload);
-    const receipt: ChannelSendReceipt = {
-      raw: response,
-    };
-    const messageId = normalizeOptionalString(response.message_id);
-    if (messageId) {
-      receipt.messageId = messageId;
-    }
-    return receipt;
+      const startedAt = Date.now();
+      let response: TelegramMessage;
+      try {
+        response = await this.callApi<TelegramMessage>("sendMessage", payload);
+      } catch (error) {
+        logTelegramDebug("sendMessage.failed", {
+          sequence,
+          attempt,
+          elapsedSinceSlotMs: Date.now() - reservedAtMs,
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      logTelegramDebug("sendMessage.succeeded", {
+        sequence,
+        attempt,
+        elapsedSinceSlotMs: Date.now() - reservedAtMs,
+        durationMs: Date.now() - startedAt,
+        messageId: redactValue(normalizeOptionalString(response.message_id)),
+      });
+      const receipt: ChannelSendReceipt = {
+        raw: response,
+      };
+      const messageId = normalizeOptionalString(response.message_id);
+      if (messageId) {
+        receipt.messageId = messageId;
+      }
+      return receipt;
+    });
   }
 
   async editMessage(message: ChannelEditMessage): Promise<ChannelSendReceipt> {
-    const payload: Record<string, unknown> = {
-      chat_id: message.chatId,
-      message_id: Number(message.messageId),
-      text: message.text,
-      disable_web_page_preview: true,
-    };
-    const parseMode = resolveTelegramParseMode(message.metadata);
-    if (parseMode) {
-      payload.parse_mode = parseMode;
-    }
-    const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
-    if (replyMarkup) {
-      payload.reply_markup = replyMarkup;
-    }
-    const threadId = normalizeOptionalInt(message.threadId);
-    if (threadId !== undefined) {
-      payload.message_thread_id = threadId;
-    }
-
-    let response: TelegramMessage | undefined;
-    try {
-      response = await this.callApi<TelegramMessage>("editMessageText", payload);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      if (/message is not modified/i.test(reason)) {
-        return {};
+    return await this.queueOutboundRequest("editMessage", message.chatId, async ({ reservedAtMs, attempt }) => {
+      const payload: Record<string, unknown> = {
+        chat_id: message.chatId,
+        message_id: Number(message.messageId),
+        text: message.text,
+        disable_web_page_preview: true,
+      };
+      const parseMode = resolveTelegramParseMode(message.metadata);
+      if (parseMode) {
+        payload.parse_mode = parseMode;
       }
-      throw error;
-    }
-    const receipt: ChannelSendReceipt = {
-      raw: response,
-    };
-    const messageId = normalizeOptionalString(response.message_id);
-    if (messageId) {
-      receipt.messageId = messageId;
-    }
-    return receipt;
+      const replyMarkup = resolveTelegramReplyMarkup(message.metadata);
+      if (replyMarkup) {
+        payload.reply_markup = replyMarkup;
+      }
+      const threadId = normalizeOptionalInt(message.threadId);
+      if (threadId !== undefined) {
+        payload.message_thread_id = threadId;
+      }
+
+      const startedAt = Date.now();
+      let response: TelegramMessage | undefined;
+      try {
+        response = await this.callApi<TelegramMessage>("editMessageText", payload);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (/message is not modified/i.test(reason)) {
+          logTelegramDebug("editMessage.ignored_not_modified", {
+            chatId: redactValue(message.chatId),
+            messageId: redactValue(message.messageId),
+            attempt,
+            elapsedSinceSlotMs: Date.now() - reservedAtMs,
+            durationMs: Date.now() - startedAt,
+          });
+          return {};
+        }
+        logTelegramDebug("editMessage.failed", {
+          chatId: redactValue(message.chatId),
+          messageId: redactValue(message.messageId),
+          attempt,
+          elapsedSinceSlotMs: Date.now() - reservedAtMs,
+          durationMs: Date.now() - startedAt,
+          error: reason,
+        });
+        throw error;
+      }
+      logTelegramDebug("editMessage.succeeded", {
+        chatId: redactValue(message.chatId),
+        messageId: redactValue(normalizeOptionalString(response.message_id) ?? message.messageId),
+        attempt,
+        elapsedSinceSlotMs: Date.now() - reservedAtMs,
+        durationMs: Date.now() - startedAt,
+        textChars: message.text.length,
+      });
+      const receipt: ChannelSendReceipt = {
+        raw: response,
+      };
+      const messageId = normalizeOptionalString(response.message_id);
+      if (messageId) {
+        receipt.messageId = messageId;
+      }
+      return receipt;
+    });
   }
 
   async sendFile(attachment: ChannelFileAttachment): Promise<ChannelSendReceipt> {
-    const payload = new FormData();
-    payload.set("chat_id", attachment.chatId);
+    logTelegramDebug("sendFile.attempt", {
+      chatId: redactValue(attachment.chatId),
+      threadId: redactValue(attachment.threadId),
+      replyToMessageId: redactValue(attachment.replyToMessageId),
+      fileName: attachment.fileName || "opencarapace-attachment.txt",
+      mimeType: attachment.mimeType ?? "text/plain; charset=utf-8",
+      captionChars: attachment.caption?.length ?? 0,
+    });
+    return await this.queueOutboundRequest("sendFile", attachment.chatId, async ({ reservedAtMs, attempt }) => {
+      const payload = new FormData();
+      payload.set("chat_id", attachment.chatId);
 
-    const replyTo = normalizeOptionalInt(attachment.replyToMessageId);
-    if (replyTo !== undefined) {
-      payload.set("reply_to_message_id", String(replyTo));
-    }
+      const replyTo = normalizeOptionalInt(attachment.replyToMessageId);
+      if (replyTo !== undefined) {
+        payload.set("reply_to_message_id", String(replyTo));
+      }
 
-    const threadId = normalizeOptionalInt(attachment.threadId);
-    if (threadId !== undefined) {
-      payload.set("message_thread_id", String(threadId));
-    }
+      const threadId = normalizeOptionalInt(attachment.threadId);
+      if (threadId !== undefined) {
+        payload.set("message_thread_id", String(threadId));
+      }
 
-    const caption = attachment.caption?.trim();
-    if (caption) {
-      payload.set(
-        "caption",
-        caption.length > 1024 ? `${caption.slice(0, 1023)}…` : caption,
-      );
-    }
+      const caption = attachment.caption?.trim();
+      if (caption) {
+        payload.set(
+          "caption",
+          caption.length > 1024 ? `${caption.slice(0, 1023)}…` : caption,
+        );
+      }
 
-    const mimeType = attachment.mimeType?.trim() || "text/plain; charset=utf-8";
-    const contentPart: BlobPart =
-      typeof attachment.content === "string"
-        ? attachment.content
-        : new Uint8Array(attachment.content);
-    const blob = new Blob([contentPart], { type: mimeType });
-    payload.set("document", blob, attachment.fileName || "opencarapace-attachment.txt");
+      const mimeType = attachment.mimeType?.trim() || "text/plain; charset=utf-8";
+      const contentPart: BlobPart =
+        typeof attachment.content === "string"
+          ? attachment.content
+          : new Uint8Array(attachment.content);
+      const blob = new Blob([contentPart], { type: mimeType });
+      payload.set("document", blob, attachment.fileName || "opencarapace-attachment.txt");
 
-    const response = await this.callMultipartApi<TelegramMessage>("sendDocument", payload);
-    const receipt: ChannelSendReceipt = {
-      raw: response,
-    };
-    const messageId = normalizeOptionalString(response.message_id);
-    if (messageId) {
-      receipt.messageId = messageId;
-    }
-    return receipt;
+      const startedAt = Date.now();
+      let response: TelegramMessage;
+      try {
+        response = await this.callMultipartApi<TelegramMessage>("sendDocument", payload);
+      } catch (error) {
+        logTelegramDebug("sendFile.failed", {
+          chatId: redactValue(attachment.chatId),
+          attempt,
+          elapsedSinceSlotMs: Date.now() - reservedAtMs,
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      logTelegramDebug("sendFile.succeeded", {
+        chatId: redactValue(attachment.chatId),
+        attempt,
+        elapsedSinceSlotMs: Date.now() - reservedAtMs,
+        messageId: redactValue(normalizeOptionalString(response.message_id)),
+        durationMs: Date.now() - startedAt,
+      });
+      const receipt: ChannelSendReceipt = {
+        raw: response,
+      };
+      const messageId = normalizeOptionalString(response.message_id);
+      if (messageId) {
+        receipt.messageId = messageId;
+      }
+      return receipt;
+    });
   }
 
   private async handleCallbackQuery(
@@ -552,20 +1015,38 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const rawData = callbackQuery.data?.trim();
     const message = callbackQuery.message;
     if (!callbackId || !rawData || !message) {
+      logTelegramDebug("callback_query.ignored_invalid_payload", {
+        hasCallbackId: Boolean(callbackId),
+        hasRawData: Boolean(rawData),
+        hasMessage: Boolean(message),
+      });
       return;
     }
+    logTelegramDebug("callback_query.received", {
+      callbackId: redactValue(callbackId),
+      hasData: Boolean(rawData),
+      chatId: redactValue(normalizeOptionalString(message.chat?.id)),
+      messageId: redactValue(normalizeOptionalString(message.message_id)),
+    });
 
     const decision = parseTurnDecisionCallbackData(rawData);
     const stopRequested = isTurnRunningStopCallbackData(rawData);
     const sessionPick = parseTelegramSessionPickCallbackData(rawData);
     const projectPick = parseTelegramProjectPickCallbackData(rawData);
     if (!decision && !stopRequested && !sessionPick && !projectPick) {
+      logTelegramDebug("callback_query.ignored_unrecognized_data", {
+        callbackId: redactValue(callbackId),
+      });
       this.acknowledgeCallbackQuery(callbackId);
       return;
     }
 
     const chatId = String(message.chat.id);
     if (this.allowedChatIds && !this.allowedChatIds.has(chatId)) {
+      logTelegramDebug("callback_query.ignored_chat_not_allowed", {
+        callbackId: redactValue(callbackId),
+        chatId: redactValue(chatId),
+      });
       this.acknowledgeCallbackQuery(callbackId);
       return;
     }
@@ -634,13 +1115,27 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             ? "已选择会话"
             : "已选择项目",
     );
-    void handler(inbound).catch(() => {
+    logTelegramDebug("callback_query.dispatch_inbound", {
+      callbackId: redactValue(callbackId),
+      chatId: redactValue(chatId),
+      text: inbound.text,
+      hasMetadata: Boolean(inbound.metadata),
+    });
+    void handler(inbound).catch((error) => {
+      logTelegramDebug("callback_query.handler_error", {
+        callbackId: redactValue(callbackId),
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Isolate per-message handler failures from polling loop.
     });
   }
 
   private acknowledgeCallbackQuery(callbackId: string, text?: string): void {
-    void this.answerCallbackQuery(callbackId, text).catch(() => {
+    void this.answerCallbackQuery(callbackId, text).catch((error) => {
+      logTelegramDebug("callback_query.ack_failed", {
+        callbackId: redactValue(callbackId),
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Best-effort acknowledgement.
     });
   }
@@ -657,14 +1152,25 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   }
 
   private async runPollLoop(handler: ChannelInboundHandler, signal: AbortSignal): Promise<void> {
+    logTelegramDebug("pollLoop.started", {
+      retryDelayMs: this.retryDelayMs,
+      pollTimeoutSeconds: this.pollTimeoutSeconds,
+    });
     while (this.running && !signal.aborted) {
       try {
         const updates = await this.fetchUpdates(signal);
+        logTelegramDebug("pollLoop.updates_received", {
+          count: updates.length,
+          currentOffset: this.offset,
+        });
         for (const update of updates) {
           this.offset = Math.max(this.offset, update.update_id + 1);
           const callbackQuery = update.callback_query;
           if (callbackQuery) {
-            void this.handleCallbackQuery(callbackQuery, handler).catch(() => {
+            void this.handleCallbackQuery(callbackQuery, handler).catch((error) => {
+              logTelegramDebug("pollLoop.callback_handler_error", {
+                error: error instanceof Error ? error.message : String(error),
+              });
               // Isolate callback handling failures from polling loop.
             });
             continue;
@@ -693,6 +1199,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             attachments = await this.downloadAttachmentPaths(message, signal);
           } catch (error) {
             attachments.errors.push(error instanceof Error ? error.message : String(error));
+            logTelegramDebug("pollLoop.attachment_download_unhandled_error", {
+              chatId: redactValue(chatId),
+              messageId: redactValue(normalizeOptionalString(message.message_id)),
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
 
           if (!text) {
@@ -753,18 +1264,33 @@ export class TelegramChannelAdapter implements ChannelAdapter {
                 : {}),
             };
           }
-          void handler(inbound).catch(() => {
+          void handler(inbound).catch((error) => {
+            logTelegramDebug("pollLoop.inbound_handler_error", {
+              chatId: redactValue(chatId),
+              messageId: redactValue(inbound.messageId),
+              error: error instanceof Error ? error.message : String(error),
+            });
             // Isolate per-message handler failures from polling loop.
           });
         }
       } catch (error) {
         if (signal.aborted || !this.running) {
+          logTelegramDebug("pollLoop.stopped", {
+            reason: signal.aborted ? "aborted" : "not_running",
+          });
           return;
         }
+        logTelegramDebug("pollLoop.error", {
+          retryDelayMs: this.retryDelayMs,
+          error: error instanceof Error ? error.message : String(error),
+        });
         // Keep polling loop alive on transient network/api failures.
         await sleep(this.retryDelayMs);
       }
     }
+    logTelegramDebug("pollLoop.exited", {
+      reason: this.running ? "signal_aborted" : "stopped",
+    });
   }
 
   private async fetchUpdates(signal: AbortSignal): Promise<TelegramUpdate[]> {
@@ -773,14 +1299,25 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       timeout: this.pollTimeoutSeconds,
       allowed_updates: ["message", "edited_message", "callback_query"],
     };
+    logTelegramDebug("fetchUpdates.request", {
+      offset: this.offset,
+      timeout: this.pollTimeoutSeconds,
+    });
     const response = await this.callApi<TelegramUpdate[]>("getUpdates", payload, signal);
+    logTelegramDebug("fetchUpdates.response", {
+      count: response.length,
+    });
     return response;
   }
 
   private async registerBotCommands(): Promise<void> {
+    logTelegramDebug("registerBotCommands.request", {
+      commandCount: TELEGRAM_COMMANDS.length,
+    });
     await this.callApi<boolean>("setMyCommands", {
       commands: TELEGRAM_COMMANDS,
     });
+    logTelegramDebug("registerBotCommands.response_ok", {});
   }
 
   private async downloadAttachmentPaths(
@@ -788,6 +1325,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     signal: AbortSignal,
   ): Promise<DownloadedTelegramAttachments> {
     const candidates = resolveAttachmentCandidates(message);
+    const messageId = normalizeOptionalString(message.message_id);
+    logTelegramDebug("attachment.download_candidates", {
+      messageId: redactValue(messageId),
+      candidateCount: candidates.length,
+    });
     if (candidates.length === 0) {
       return {
         attachmentPaths: [],
@@ -806,13 +1348,29 @@ export class TelegramChannelAdapter implements ChannelAdapter {
 
     for (const candidate of candidates) {
       try {
+        logTelegramDebug("attachment.download_candidate_begin", {
+          messageId: redactValue(messageId),
+          kind: candidate.kind,
+          fileId: redactValue(candidate.fileId),
+        });
         const file = await this.callApi<TelegramFile>("getFile", { file_id: candidate.fileId }, signal);
         const remotePath = file.file_path?.trim();
         if (!remotePath) {
+          logTelegramDebug("attachment.download_candidate_missing_path", {
+            messageId: redactValue(messageId),
+            kind: candidate.kind,
+            fileId: redactValue(candidate.fileId),
+          });
           downloaded.errors.push(`${candidate.kind}: missing file_path`);
           continue;
         }
         const localPath = await this.downloadTelegramFile(remotePath, candidate.defaultExt, signal);
+        logTelegramDebug("attachment.download_candidate_succeeded", {
+          messageId: redactValue(messageId),
+          kind: candidate.kind,
+          fileId: redactValue(candidate.fileId),
+          localPath,
+        });
         downloaded.attachmentPaths.push(localPath);
         downloaded.kinds.push(candidate.kind);
         if (candidate.isImage) {
@@ -820,6 +1378,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
+        logTelegramDebug("attachment.download_candidate_failed", {
+          messageId: redactValue(messageId),
+          kind: candidate.kind,
+          fileId: redactValue(candidate.fileId),
+          error: reason,
+        });
         downloaded.errors.push(`${candidate.kind}: ${reason}`);
       }
     }
@@ -839,12 +1403,31 @@ export class TelegramChannelAdapter implements ChannelAdapter {
   ): Promise<string> {
     const normalized = remotePath.replace(/^\/+/, "");
     const url = `${this.apiBaseUrl}/file/bot${this.token}/${normalized}`;
-    const response = await fetch(url, {
-      method: "GET",
-      signal: signal ?? null,
+    const startedAt = Date.now();
+    logTelegramDebug("file_download.request", {
+      remotePath: normalized,
     });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        signal: signal ?? null,
+      });
+    } catch (error) {
+      logTelegramDebug("file_download.network_error", {
+        remotePath: normalized,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
 
     if (!response.ok) {
+      logTelegramDebug("file_download.http_error", {
+        remotePath: normalized,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+      });
       throw new Error(`telegram file download failed: status=${response.status}`);
     }
 
@@ -855,6 +1438,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     await mkdir(root, { recursive: true });
     const localPath = path.join(root, `${Date.now()}-${randomUUID()}${safeExt}`);
     await writeFile(localPath, bytes);
+    logTelegramDebug("file_download.succeeded", {
+      remotePath: normalized,
+      localPath,
+      bytes: bytes.length,
+      durationMs: Date.now() - startedAt,
+    });
     return localPath;
   }
 
@@ -864,19 +1453,83 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     signal?: AbortSignal,
   ): Promise<T> {
     const url = `${this.apiBaseUrl}/bot${this.token}/${method}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: signal ?? null,
+    const startedAt = Date.now();
+    logTelegramDebug("api.request", {
+      method,
+      payloadKeys: Object.keys(payload),
     });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: signal ?? null,
+      });
+    } catch (error) {
+      logTelegramDebug("api.network_error", {
+        method,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
 
     if (!response.ok) {
-      throw new Error(`telegram api request failed (${method}): status=${response.status}`);
+      const bodyText = await response.text().catch(() => "");
+      const details = parseTelegramHttpErrorBody(bodyText);
+      const retryAfterHeaderSeconds = parseRetryAfterFromHeader(response.headers.get("retry-after"));
+      const retryAfterSeconds = retryAfterHeaderSeconds ?? details.retryAfterSeconds;
+      logTelegramDebug("api.http_error", {
+        method,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        errorCode: details.errorCode,
+        retryAfterSeconds,
+        retryAfterHeaderSeconds,
+        description: details.description,
+        bodyPreview: details.bodyPreview,
+      });
+      if (
+        isRateLimitedErrorShape({
+          status: response.status,
+          errorCode: details.errorCode,
+          retryAfterSeconds,
+        })
+      ) {
+        throw new TelegramRateLimitError({
+          method,
+          retryAfterSeconds: resolveRetryAfterSeconds(retryAfterSeconds),
+          status: response.status,
+          ...(details.description ? { description: details.description } : {}),
+        });
+      }
+      const retrySuffix =
+        retryAfterSeconds === undefined ? "" : ` retry_after=${retryAfterSeconds}`;
+      const descriptionSuffix = details.description ? `: ${details.description}` : "";
+      throw new Error(
+        `telegram api request failed (${method}): status=${response.status}${retrySuffix}${descriptionSuffix}`,
+      );
     }
-    const json = (await response.json()) as TelegramApiEnvelope<T>;
+    let json: TelegramApiEnvelope<T>;
+    try {
+      json = (await response.json()) as TelegramApiEnvelope<T>;
+    } catch (error) {
+      logTelegramDebug("api.json_parse_error", {
+        method,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    logTelegramDebug("api.http_ok", {
+      method,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+    });
     return this.unwrapEnvelope(method, json);
   }
 
@@ -886,21 +1539,109 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     signal?: AbortSignal,
   ): Promise<T> {
     const url = `${this.apiBaseUrl}/bot${this.token}/${method}`;
-    const response = await fetch(url, {
-      method: "POST",
-      body: payload,
-      signal: signal ?? null,
+    const startedAt = Date.now();
+    logTelegramDebug("api.multipart_request", {
+      method,
     });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        body: payload,
+        signal: signal ?? null,
+      });
+    } catch (error) {
+      logTelegramDebug("api.network_error", {
+        method,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
 
     if (!response.ok) {
-      throw new Error(`telegram api request failed (${method}): status=${response.status}`);
+      const bodyText = await response.text().catch(() => "");
+      const details = parseTelegramHttpErrorBody(bodyText);
+      const retryAfterHeaderSeconds = parseRetryAfterFromHeader(response.headers.get("retry-after"));
+      const retryAfterSeconds = retryAfterHeaderSeconds ?? details.retryAfterSeconds;
+      logTelegramDebug("api.http_error", {
+        method,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        errorCode: details.errorCode,
+        retryAfterSeconds,
+        retryAfterHeaderSeconds,
+        description: details.description,
+        bodyPreview: details.bodyPreview,
+      });
+      if (
+        isRateLimitedErrorShape({
+          status: response.status,
+          errorCode: details.errorCode,
+          retryAfterSeconds,
+        })
+      ) {
+        throw new TelegramRateLimitError({
+          method,
+          retryAfterSeconds: resolveRetryAfterSeconds(retryAfterSeconds),
+          status: response.status,
+          ...(details.description ? { description: details.description } : {}),
+        });
+      }
+      const retrySuffix =
+        retryAfterSeconds === undefined ? "" : ` retry_after=${retryAfterSeconds}`;
+      const descriptionSuffix = details.description ? `: ${details.description}` : "";
+      throw new Error(
+        `telegram api request failed (${method}): status=${response.status}${retrySuffix}${descriptionSuffix}`,
+      );
     }
-    const json = (await response.json()) as TelegramApiEnvelope<T>;
+    let json: TelegramApiEnvelope<T>;
+    try {
+      json = (await response.json()) as TelegramApiEnvelope<T>;
+    } catch (error) {
+      logTelegramDebug("api.json_parse_error", {
+        method,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    logTelegramDebug("api.http_ok", {
+      method,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+    });
     return this.unwrapEnvelope(method, json);
   }
 
   private unwrapEnvelope<T>(method: string, envelope: TelegramApiEnvelope<T>): T {
     if (!envelope.ok || envelope.result === undefined) {
+      const errorCode =
+        typeof envelope.error_code === "number" && Number.isFinite(envelope.error_code)
+          ? Math.floor(envelope.error_code)
+          : undefined;
+      const retryAfterSeconds = parseRetryAfterFromErrorEnvelope(envelope);
+      if (
+        isRateLimitedErrorShape({
+          status: undefined,
+          errorCode,
+          retryAfterSeconds,
+        })
+      ) {
+        throw new TelegramRateLimitError({
+          method,
+          retryAfterSeconds: resolveRetryAfterSeconds(retryAfterSeconds),
+          ...(errorCode !== undefined ? { status: errorCode } : {}),
+          ...(envelope.description ? { description: envelope.description } : {}),
+        });
+      }
+      logTelegramDebug("api.envelope_error", {
+        method,
+        errorCode,
+        retryAfterSeconds,
+        description: envelope.description ?? "unknown error",
+      });
       throw new Error(
         `telegram api response failed (${method}): ${envelope.description || "unknown error"}`,
       );
