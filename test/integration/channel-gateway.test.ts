@@ -1007,6 +1007,69 @@ describe("ChannelGateway", () => {
     expect(sessionsB.finalText).not.toContain("alpha conversation");
   });
 
+  test("keeps dotted project sessions visible after gateway restart", async () => {
+    const adapterA = new CaptureChannelAdapter();
+    const registryA = new ChannelRegistry();
+    registryA.register(adapterA);
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), "open-carapace-project-dot-"));
+    mkdirSync(path.join(projectRoot, "proj.alpha"), { recursive: true });
+    const orchestrator = createDeterministicOrchestrator();
+
+    const gatewayA = new ChannelGateway({
+      orchestrator,
+      registry: registryA,
+      routing: {
+        defaultAgentId: "codex",
+      },
+      projectRootDir: projectRoot,
+    });
+
+    await gatewayA.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-dot",
+      messageId: "pd-1",
+      text: "/project",
+    });
+    const pick = findProjectPickCallbackByText(adapterA.sent, "proj.alpha");
+    await gatewayA.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-dot",
+      messageId: "pd-2",
+      text: "/project-pick",
+      metadata: {
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: pick,
+      },
+    });
+    await gatewayA.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-dot",
+      messageId: "pd-3",
+      text: "dotted project session message",
+    });
+
+    const adapterB = new CaptureChannelAdapter();
+    const registryB = new ChannelRegistry();
+    registryB.register(adapterB);
+    const gatewayB = new ChannelGateway({
+      orchestrator,
+      registry: registryB,
+      routing: {
+        defaultAgentId: "codex",
+      },
+      projectRootDir: projectRoot,
+    });
+
+    const sessions = await gatewayB.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-dot",
+      messageId: "pd-4",
+      text: "/sessions",
+    });
+    expect(sessions.finalText).toContain("Sessions (1)");
+    expect(sessions.finalText).toContain("dotted project session");
+    expect(sessions.finalText).toContain("- project: proj.alpha");
+  });
+
   test("sends tail-preview plus full-text attachment for long telegram replies", async () => {
     const adapter = new CaptureChannelAdapter(220);
     const registry = new ChannelRegistry();

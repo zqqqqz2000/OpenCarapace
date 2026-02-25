@@ -15,7 +15,9 @@ export function normalizeChannelSessionProjectKey(projectKey: string | undefined
   if (!normalized) {
     return DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
   }
-  return encodeURIComponent(normalized);
+  const decoded = decodeChannelSessionProjectKey(normalized);
+  // `parseChannelSessionId` uses "." as delimiter, so project segment must escape dots too.
+  return encodeURIComponent(decoded).replace(/\./g, "%2E");
 }
 
 export function decodeChannelSessionProjectKey(projectKey: string): string {
