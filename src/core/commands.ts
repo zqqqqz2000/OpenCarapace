@@ -1,5 +1,10 @@
 import type { AgentRegistry } from "./agent.js";
 import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
+import {
+  DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
+  decodeChannelSessionProjectKey,
+  parseChannelSessionId,
+} from "../channels/session-key.js";
 import { MemorySkill } from "./memory-skill.js";
 import { buildFallbackSessionTitle } from "./session-title.js";
 import type { SessionManager, SessionRecord } from "./session.js";
@@ -220,6 +225,14 @@ function clipSessionListName(name: string, maxChars = 24): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function resolveSessionProjectKey(sessionId: string): string | undefined {
+  const parsed = parseChannelSessionId(sessionId);
+  if (!parsed) {
+    return undefined;
+  }
+  return parsed.projectKey || DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
 }
 
 type ThinkingDepth = "low" | "medium" | "high";
@@ -447,7 +460,14 @@ export class ConversationCommandService {
       case "sessions": {
         return {
           handled: true,
-          finalText: this.sessionsText(),
+          finalText: this.sessionsText(params.sessionId),
+          agentId: params.currentAgentId,
+        };
+      }
+      case "project": {
+        return {
+          handled: true,
+          finalText: this.projectText(params.sessionId, args[0]),
           agentId: params.currentAgentId,
         };
       }
@@ -519,6 +539,7 @@ export class ConversationCommandService {
       "- /new or /reset: clear current session messages",
       "- /history [n]: show last n messages (default 12)",
       "- /sessions: list recent sessions",
+      "- /project: show current project and open picker in Telegram",
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/cloudcode/claude-code)",
       "- /model [name|clear]: show or set model preference for current session",
@@ -614,8 +635,15 @@ export class ConversationCommandService {
     return [`History (last ${rows.length})`, ...rows].join("\n");
   }
 
-  private sessionsText(): string {
-    const sessions = this.deps.sessions.list();
+  private sessionsText(sessionId: string): string {
+    const allSessions = this.deps.sessions.list();
+    const scopedProjectKey = resolveSessionProjectKey(sessionId);
+    const sessions = scopedProjectKey
+      ? allSessions.filter((session) => {
+          const itemProject = resolveSessionProjectKey(session.id) ?? DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
+          return itemProject === scopedProjectKey;
+        })
+      : allSessions;
     if (sessions.length === 0) {
       return "No sessions yet.";
     }
@@ -629,7 +657,29 @@ export class ConversationCommandService {
       return `${index + 1}. ${marker}${name} ${updated} <${session.agentId}> x${session.messages.length}`;
     });
 
-    return [`Sessions (${sessions.length})`, ...rows].join("\n");
+    const heading = [`Sessions (${sessions.length})`];
+    if (scopedProjectKey) {
+      heading.push(`- project: ${decodeChannelSessionProjectKey(scopedProjectKey)}`);
+    }
+    return [...heading, ...rows].join("\n");
+  }
+
+  private projectText(sessionId: string, requestedProjectRaw: string | undefined): string {
+    const projectKey = resolveSessionProjectKey(sessionId);
+    const current = projectKey ? decodeChannelSessionProjectKey(projectKey) : "(unbound)";
+    if (requestedProjectRaw?.trim()) {
+      return [
+        "Project selection",
+        `- current: ${current}`,
+        `- requested: ${requestedProjectRaw.trim()}`,
+        "Use /project in Telegram and select from inline buttons.",
+      ].join("\n");
+    }
+    return [
+      "Project selection",
+      `- current: ${current}`,
+      "Use /project in Telegram to choose another project.",
+    ].join("\n");
   }
 
   private sessionText(sessionId: string, currentAgentId: AgentId): string {

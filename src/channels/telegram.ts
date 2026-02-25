@@ -3,6 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  TELEGRAM_PROJECT_PICK_META_TOKEN,
+  parseTelegramProjectPickCallbackData,
+} from "./telegram-project-picker.js";
+import {
   TELEGRAM_SESSION_PICK_META_TOKEN,
   parseTelegramSessionPickCallbackData,
 } from "./telegram-session-picker.js";
@@ -345,6 +349,7 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "history", description: "Show recent messages in this session" },
   { command: "session", description: "Show current session metadata" },
   { command: "sessions", description: "List recent sessions" },
+  { command: "project", description: "Select active project" },
   { command: "agent", description: "Show or switch current agent" },
   { command: "model", description: "Show or set model preference" },
   { command: "depth", description: "Show or set thinking depth" },
@@ -359,7 +364,7 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
 
 function buildDefaultReplyKeyboardMarkup(): Record<string, unknown> {
   return {
-    keyboard: [[{ text: "/new" }, { text: "/sessions" }]],
+    keyboard: [[{ text: "/new" }, { text: "/sessions" }], [{ text: "/project" }]],
     resize_keyboard: true,
     is_persistent: true,
     one_time_keyboard: false,
@@ -553,7 +558,8 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const decision = parseTurnDecisionCallbackData(rawData);
     const stopRequested = isTurnRunningStopCallbackData(rawData);
     const sessionPick = parseTelegramSessionPickCallbackData(rawData);
-    if (!decision && !stopRequested && !sessionPick) {
+    const projectPick = parseTelegramProjectPickCallbackData(rawData);
+    if (!decision && !stopRequested && !sessionPick && !projectPick) {
       this.acknowledgeCallbackQuery(callbackId);
       return;
     }
@@ -567,7 +573,13 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const inbound: ChannelInboundMessage = {
       channelId: this.id,
       chatId,
-      text: stopRequested ? "/stop" : sessionPick ? "/session-pick" : "/turn-decision",
+      text: stopRequested
+        ? "/stop"
+        : sessionPick
+          ? "/session-pick"
+          : projectPick
+            ? "/project-pick"
+            : "/turn-decision",
       raw: callbackQuery,
     };
     if (decision) {
@@ -580,6 +592,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       inbound.metadata = {
         ...(inbound.metadata ?? {}),
         [TELEGRAM_SESSION_PICK_META_TOKEN]: sessionPick.token,
+      };
+    }
+    if (projectPick) {
+      inbound.metadata = {
+        ...(inbound.metadata ?? {}),
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: projectPick.token,
       };
     }
 
@@ -612,7 +630,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           ? decision.action === "steer"
             ? "已选择 steer"
             : "已选择 stack"
-          : "已选择会话",
+          : sessionPick
+            ? "已选择会话"
+            : "已选择项目",
     );
     void handler(inbound).catch(() => {
       // Isolate per-message handler failures from polling loop.

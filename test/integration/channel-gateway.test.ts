@@ -1,6 +1,10 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "bun:test";
 import { ChannelGateway } from "../../src/channels/gateway.js";
 import { ChannelRegistry } from "../../src/channels/registry.js";
+import { buildChannelSessionId } from "../../src/channels/session-key.js";
 import type {
   ChannelAdapter,
   ChannelEditMessage,
@@ -24,6 +28,10 @@ import {
   TURN_RUNNING_STOP_CALLBACK,
   parseTurnDecisionCallbackData,
 } from "../../src/channels/turn-decision.js";
+import {
+  parseTelegramProjectPickCallbackData,
+  TELEGRAM_PROJECT_PICK_META_TOKEN,
+} from "../../src/channels/telegram-project-picker.js";
 import {
   parseTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_TOKEN,
@@ -263,6 +271,49 @@ function findSessionPickCallback(messages: ChannelOutboundMessage[]): string {
     }
   }
   throw new Error("missing session picker callback token");
+}
+
+function findProjectPickCallbackByText(
+  messages: ChannelOutboundMessage[],
+  text: string,
+): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData || !button.text?.includes(text)) {
+          continue;
+        }
+        const parsed = parseTelegramProjectPickCallbackData(callbackData);
+        if (parsed) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error(`missing project picker callback token for text=${text}`);
+}
+
+function findLatestMessageContaining(
+  messages: ChannelOutboundMessage[],
+  text: string,
+): ChannelOutboundMessage {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.text.includes(text)) {
+      return message;
+    }
+  }
+  throw new Error(`missing message containing text=${text}`);
 }
 
 describe("ChannelGateway", () => {
@@ -778,6 +829,182 @@ describe("ChannelGateway", () => {
           message.text.includes("Session:") && message.text.includes("History (last"),
       ),
     ).toBeTrue();
+  });
+
+  test("shows project picker with top-n pagination and last-used ordering", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const orchestrator = createDeterministicOrchestrator();
+    const projectRoot = mkdtempSync(
+      path.join(os.tmpdir(), "open-carapace-project-picker-"),
+    );
+    const projectNames = [
+      "alpha",
+      "beta",
+      "gamma",
+      "delta",
+      "epsilon",
+      "zeta",
+      "eta",
+      "theta",
+      "iota",
+      "kappa",
+    ];
+    for (const name of projectNames) {
+      mkdirSync(path.join(projectRoot, name), { recursive: true });
+    }
+
+    const seedMessage = {
+      channelId: "telegram",
+      chatId: "chat-project-picker",
+    } as const;
+    orchestrator.sessions.appendMessage(
+      buildChannelSessionId(seedMessage, { projectKey: "alpha" }),
+      "codex",
+      {
+        role: "user",
+        content: "alpha seed",
+        createdAt: Date.now(),
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    orchestrator.sessions.appendMessage(
+      buildChannelSessionId(seedMessage, { projectKey: "beta" }),
+      "codex",
+      {
+        role: "user",
+        content: "beta seed",
+        createdAt: Date.now(),
+      },
+    );
+
+    const gateway = new ChannelGateway({
+      orchestrator,
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+      projectRootDir: projectRoot,
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-picker",
+      messageId: "pp-1",
+      text: "/project",
+    });
+
+    const firstPage = findLatestMessageContaining(adapter.sent, "Projects 1-8/10");
+    const firstPageRows = (firstPage.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ text?: string }>>;
+          };
+        }
+      | undefined)?.telegram_reply_markup?.inline_keyboard;
+    const firstButtonText = firstPageRows?.[0]?.[0]?.text ?? "";
+    expect(firstButtonText).toContain("beta");
+
+    const moreToken = findProjectPickCallbackByText(adapter.sent, "更多");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-picker",
+      messageId: "pp-2",
+      text: "/project-pick",
+      metadata: {
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: moreToken,
+      },
+    });
+
+    expect(
+      adapter.sent.some((message) => message.text.includes("Projects 9-10/10")),
+    ).toBeTrue();
+  });
+
+  test("binds turns to selected project and scopes /sessions by project", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), "open-carapace-project-bind-"));
+    mkdirSync(path.join(projectRoot, "proj-a"), { recursive: true });
+    mkdirSync(path.join(projectRoot, "proj-b"), { recursive: true });
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+      projectRootDir: projectRoot,
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-1",
+      text: "/project",
+    });
+    const pickA = findProjectPickCallbackByText(adapter.sent, "proj-a");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-2",
+      text: "/project-pick",
+      metadata: {
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: pickA,
+      },
+    });
+
+    const turnA = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-3",
+      text: "alpha conversation message",
+    });
+    expect(turnA.sessionId).toContain("agent.proj-a.");
+    const sessionsA = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-4",
+      text: "/sessions",
+    });
+    expect(sessionsA.finalText).toContain("Sessions (1)");
+    expect(sessionsA.finalText).toContain("alpha conversation");
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-5",
+      text: "/project",
+    });
+    const pickB = findProjectPickCallbackByText(adapter.sent, "proj-b");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-6",
+      text: "/project-pick",
+      metadata: {
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: pickB,
+      },
+    });
+
+    const turnB = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-7",
+      text: "beta conversation message",
+    });
+    expect(turnB.sessionId).toContain("agent.proj-b.");
+    const sessionsB = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-bind",
+      messageId: "pb-8",
+      text: "/sessions",
+    });
+    expect(sessionsB.finalText).toContain("Sessions (1)");
+    expect(sessionsB.finalText).toContain("beta conversation");
+    expect(sessionsB.finalText).not.toContain("alpha conversation");
   });
 
   test("sends tail-preview plus full-text attachment for long telegram replies", async () => {

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { BaseCodeAgentAdapter } from "./base.js";
 import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend.js";
 import { SdkAgentBackend } from "./backend.js";
@@ -209,6 +211,73 @@ function parseJsonLine(line: string): CodexJsonEvent | null {
   } catch {
     return null;
   }
+}
+
+function resolveMetadataString(metadata: BackendRunRequest["metadata"], key: string): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const value = metadata[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function decodeProjectKey(projectKey: string | undefined): string | undefined {
+  const normalized = projectKey?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+function isSubPath(baseDir: string, candidatePath: string): boolean {
+  const relative = path.relative(baseDir, candidatePath);
+  if (!relative) {
+    return true;
+  }
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isDirectory(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutionCwd(metadata: BackendRunRequest["metadata"]): string {
+  const projectRootRaw = resolveMetadataString(metadata, "project_root_dir");
+  if (!projectRootRaw) {
+    return process.cwd();
+  }
+  const projectRoot = path.resolve(projectRootRaw);
+  if (!isDirectory(projectRoot)) {
+    return process.cwd();
+  }
+
+  const projectName =
+    resolveMetadataString(metadata, "project_name")
+    ?? decodeProjectKey(resolveMetadataString(metadata, "project_key"));
+  if (!projectName) {
+    return projectRoot;
+  }
+
+  const candidate = path.resolve(projectRoot, projectName);
+  if (!isSubPath(projectRoot, candidate)) {
+    return projectRoot;
+  }
+  if (!isDirectory(candidate)) {
+    return projectRoot;
+  }
+  return candidate;
 }
 
 function composeSessionTitlePrompt(firstUserPrompt: string): string {
@@ -456,10 +525,11 @@ class CodexCliSessionBackend implements AgentBackend {
     const mergedEnv: NodeJS.ProcessEnv = {
       ...process.env,
     };
+    const executionCwd = resolveExecutionCwd(request.metadata);
 
     return await new Promise<BackendRunResult>((resolve, reject) => {
       const child = spawn(this.options.command, args, {
-        cwd: process.cwd(),
+        cwd: executionCwd,
         env: mergedEnv,
         stdio: ["pipe", "pipe", "pipe"],
       });

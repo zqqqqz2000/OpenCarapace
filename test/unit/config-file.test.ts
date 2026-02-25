@@ -48,4 +48,9 @@ describe("config file", () => {
     expect(config.channels?.telegram?.allowed_chat_ids).toEqual(["a", "b", "c"]);
     expect(config.runtime?.gateway_port).toBe(3020);
   });
+
+  test("default config sets project root under ~/Documents", () => {
+    const config = defaultOpenCarapaceConfig();
+    expect(config.runtime?.project_root_dir).toBe(path.resolve(os.homedir(), "Documents"));
+  });
 });

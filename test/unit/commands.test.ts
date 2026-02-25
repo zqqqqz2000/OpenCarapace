@@ -379,4 +379,28 @@ describe("ConversationCommandService", () => {
     expect(result.handled).toBeTrue();
     expect(result.finalText).toContain("…");
   });
+
+  test("filters /sessions by current project when session id is project-bound", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.appendMessage("agent.alpha.telegram.chat.main", "codex", {
+      role: "user",
+      content: "alpha issue",
+      createdAt: Date.now(),
+    });
+    sessions.appendMessage("agent.beta.telegram.chat.main", "codex", {
+      role: "user",
+      content: "beta issue",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "agent.alpha.telegram.chat.main",
+      currentAgentId: "codex",
+      input: "/sessions",
+    });
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("- project: alpha");
+    expect(result.finalText).toContain("alpha issue");
+    expect(result.finalText).not.toContain("beta issue");
+  });
 });

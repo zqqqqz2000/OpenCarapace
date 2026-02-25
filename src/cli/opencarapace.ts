@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { cancel, confirm, intro, isCancel, note, outro, select, text } from "@clack/prompts";
 import type { OpenCarapaceConfig } from "../config/types.js";
 import {
@@ -152,6 +154,7 @@ async function promptNumberInput(
 function renderCurrentSummary(config: OpenCarapaceConfig): string {
   const defaultAgent = config.runtime?.default_agent_id ?? "codex";
   const sessionStoreFile = config.runtime?.session_store_file ?? "sessions.json";
+  const projectRootDir = config.runtime?.project_root_dir ?? "";
   const codex = config.agents?.codex;
   const cloudcode = config.agents?.cloudcode;
   const claude = config.agents?.claude_code;
@@ -165,6 +168,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
     "Current config summary",
     `- default agent: ${defaultAgent}`,
     `- session store: ${sessionStoreFile}`,
+    `- project root: ${projectRootDir || "(required in config tui, subdirectories are projects)"}`,
     `- agents: codex=${codex?.enabled ?? true}, cloudcode=${cloudcode?.enabled ?? false}, claude-code=${claude?.enabled ?? false}`,
     `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}, wechat=${wechat?.enabled ?? false}`,
     `- openclaw catalog: ${skills?.enable_openclaw_catalog ?? true}`,
@@ -248,6 +252,24 @@ async function configureRuntimeAndAgents(
     sessionStoreFileCurrent,
     "sessions.json",
   );
+  const defaultProjectRoot = path.resolve(os.homedir(), "Documents");
+  const projectRootCurrent = config.runtime?.project_root_dir?.trim() || defaultProjectRoot;
+  let projectRoot = (await promptNormalizedInput(
+    "Project root directory (required; its subdirectories are treated as projects)",
+    projectRootCurrent,
+    defaultProjectRoot,
+  )) ?? "";
+  while (!projectRoot.trim()) {
+    const candidate = await promptNormalizedInput(
+      "Project root directory (required; its subdirectories are treated as projects)",
+      projectRootCurrent,
+      defaultProjectRoot,
+    );
+    projectRoot = candidate ?? "";
+    if (!projectRoot.trim()) {
+      note("Project root directory is required, and its subdirectories are project options.", "Runtime & Agents");
+    }
+  }
 
   config.runtime = {
     ...(config.runtime ?? {}),
@@ -256,6 +278,7 @@ async function configureRuntimeAndAgents(
     gateway_port: gatewayPort,
     workspace_root: workspaceRoot || "",
     session_store_file: sessionStoreFile || "",
+    project_root_dir: projectRoot.trim(),
   };
 
   await configureAgentBlock({

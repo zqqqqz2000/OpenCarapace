@@ -38,6 +38,7 @@ export * from "./channels/registry.js";
 export * from "./channels/session-key.js";
 export * from "./channels/gateway.js";
 export * from "./channels/telegram.js";
+export * from "./channels/telegram-project-picker.js";
 export * from "./channels/bridge.js";
 export * from "./channels/turn-decision.js";
 export * from "./channels/factory.js";
@@ -255,12 +256,27 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
 
 export function createDefaultChannelGateway(options?: RuntimeBootstrapOptions & { orchestrator?: ChatOrchestrator }): ChannelGateway {
   const { config, configPath } = resolveRuntimeConfig(options);
-  return new ChannelGateway({
+  const projectRootRaw = config.runtime?.project_root_dir?.trim();
+  const projectRootDir = projectRootRaw
+    ? path.isAbsolute(projectRootRaw)
+      ? projectRootRaw
+      : path.resolve(path.dirname(configPath), projectRootRaw)
+    : undefined;
+  const gatewayDeps = {
     orchestrator: options?.orchestrator ?? createDefaultOrchestrator({ config, configPath }),
     registry: createChannelRegistryFromConfig({
       config,
       configFilePath: configPath,
     }),
     routing: resolveChannelAgentRoutingFromConfig(config),
-  });
+  } as {
+    orchestrator: ChatOrchestrator;
+    registry: ReturnType<typeof createChannelRegistryFromConfig>;
+    routing: ReturnType<typeof resolveChannelAgentRoutingFromConfig>;
+    projectRootDir?: string;
+  };
+  if (projectRootDir) {
+    gatewayDeps.projectRootDir = projectRootDir;
+  }
+  return new ChannelGateway(gatewayDeps);
 }

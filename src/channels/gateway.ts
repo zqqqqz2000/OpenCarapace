@@ -1,11 +1,24 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { ChatOrchestrator } from "../core/orchestrator.js";
 import { isTurnAbortedError } from "../core/abort.js";
 import { buildFallbackSessionTitle } from "../core/session-title.js";
 import type { SessionRecord } from "../core/session.js";
 import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
 import { ChannelRegistry } from "./registry.js";
-import { buildChannelSessionId } from "./session-key.js";
+import {
+  buildChannelConversationKey,
+  buildChannelSessionId,
+  decodeChannelSessionProjectKey,
+  DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
+  normalizeChannelSessionProjectKey,
+  parseChannelSessionId,
+} from "./session-key.js";
+import {
+  buildTelegramProjectPickCallbackData,
+  TELEGRAM_PROJECT_PICK_META_TOKEN,
+} from "./telegram-project-picker.js";
 import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_SESSION_ID,
@@ -36,6 +49,8 @@ const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
 const TELEGRAM_SESSION_PICK_TTL_MS = 30 * 60 * 1000;
 const TELEGRAM_SESSION_PICK_MAX_ITEMS = 20;
+const TELEGRAM_PROJECT_PICK_TTL_MS = 30 * 60 * 1000;
+const TELEGRAM_PROJECT_PICK_PAGE_SIZE = 8;
 const RUNNING_ANIMATION_INTERVAL_MS = 500;
 const RUNNING_ANIMATION_FRAMES = [
   "🌑",
@@ -157,6 +172,21 @@ function isSessionsCommandText(input: string): boolean {
   return commandNameFromText(input) === "sessions";
 }
 
+function isProjectCommandText(input: string): boolean {
+  return commandNameFromText(input) === "project";
+}
+
+function readTelegramProjectPickToken(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const token = metadata[TELEGRAM_PROJECT_PICK_META_TOKEN];
+  if (typeof token !== "string" || !token.trim()) {
+    return undefined;
+  }
+  return token.trim();
+}
+
 function readTelegramSessionPickToken(metadata: unknown): string | undefined {
   if (!isRecord(metadata)) {
     return undefined;
@@ -214,6 +244,10 @@ function clipSessionDisplayName(name: string, maxChars = 28): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function resolveSessionProjectKey(sessionId: string): string {
+  return parseChannelSessionId(sessionId)?.projectKey ?? DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
 }
 
 function cloneMetadata(metadata: unknown): Record<string, unknown> {
@@ -280,6 +314,23 @@ type PendingTelegramSessionPick = {
   chatId: string;
   threadId?: string;
   createdAt: number;
+};
+
+type ProjectOption = {
+  key: string;
+  name: string;
+  lastUsedAt: number;
+};
+
+type PendingTelegramProjectPick = {
+  token: string;
+  channelId: ChannelId;
+  chatId: string;
+  threadId?: string;
+  createdAt: number;
+  action: "select" | "page";
+  projectKey?: string;
+  page?: number;
 };
 
 class ChannelTurnRelay {
@@ -636,6 +687,7 @@ export type ChannelGatewayDeps = {
   orchestrator: ChatOrchestrator;
   registry?: ChannelRegistry;
   routing: ChannelAgentRouting;
+  projectRootDir?: string;
 };
 
 export class ChannelGateway {
@@ -651,11 +703,20 @@ export class ChannelGateway {
     string,
     PendingTelegramSessionPick
   >();
+  private readonly pendingTelegramProjectPicks = new Map<
+    string,
+    PendingTelegramProjectPick
+  >();
+  private readonly activeProjectsByConversation = new Map<string, string>();
+  private readonly projectRootDir: string | undefined;
 
   constructor(deps: ChannelGatewayDeps) {
     this.orchestrator = deps.orchestrator;
     this.registry = deps.registry ?? new ChannelRegistry();
     this.routing = deps.routing;
+    this.projectRootDir = deps.projectRootDir?.trim()
+      ? path.resolve(deps.projectRootDir.trim())
+      : undefined;
   }
 
   registerChannel(adapter: ChannelAdapter): this {
@@ -685,8 +746,23 @@ export class ChannelGateway {
 
   async handleInbound(message: ChannelInboundMessage): Promise<ChatTurnResult> {
     const channel = this.registry.require(message.channelId);
-    const defaultSessionId = buildChannelSessionId(message);
+    const conversationKey = buildChannelConversationKey(message);
+    const activeProjectKey = this.resolveActiveProjectKey(conversationKey, message);
+    const defaultSessionId = buildChannelSessionId(message, {
+      projectKey: activeProjectKey,
+    });
     const agentId = this.resolveAgentId(message.channelId);
+    const projectPickToken = readTelegramProjectPickToken(message.metadata);
+    if (projectPickToken) {
+      return await this.handleTelegramProjectPickSelection({
+        channel,
+        message,
+        sessionId: defaultSessionId,
+        agentId,
+        conversationKey,
+        token: projectPickToken,
+      });
+    }
     const pickToken = readTelegramSessionPickToken(message.metadata);
     if (pickToken) {
       return await this.handleTelegramSessionPickSelection({
@@ -699,6 +775,8 @@ export class ChannelGateway {
     }
 
     const sessionId = readTelegramSessionPickSessionId(message.metadata) ?? defaultSessionId;
+    const sessionProjectKey = resolveSessionProjectKey(sessionId);
+    this.activeProjectsByConversation.set(conversationKey, sessionProjectKey);
     const selectedSessionName = readTelegramSessionPickSessionName(message.metadata);
     const turnDecision = readTurnDecisionSelection(message.metadata);
     if (turnDecision) {
@@ -747,6 +825,7 @@ export class ChannelGateway {
       delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_TOKEN];
       delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID];
       delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME];
+      delete normalizedMetadata[TELEGRAM_PROJECT_PICK_META_TOKEN];
 
       const result = await this.orchestrator.chat({
         agentId,
@@ -765,6 +844,9 @@ export class ChannelGateway {
           imagePaths: message.imagePaths,
           rawInbound: message.raw,
           steer: steerTriggered,
+          project_key: sessionProjectKey,
+          project_name: decodeChannelSessionProjectKey(sessionProjectKey),
+          project_root_dir: this.projectRootDir ?? "",
           ...normalizedMetadata,
         },
         onEvent: async (event) => {
@@ -781,7 +863,15 @@ export class ChannelGateway {
         : result;
       await relay.finalize(decorated);
       if (channel.id === "telegram" && isSessionsCommandText(message.text)) {
-        await this.sendTelegramSessionPicker(channel, message);
+        await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
+      }
+      if (channel.id === "telegram" && isProjectCommandText(message.text)) {
+        await this.sendTelegramProjectPicker(
+          channel,
+          message,
+          sessionProjectKey,
+          0,
+        );
       }
       return decorated;
     } catch (error) {
@@ -916,6 +1006,73 @@ export class ChannelGateway {
     return await this.handleInbound(replay);
   }
 
+  private async handleTelegramProjectPickSelection(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    conversationKey: string;
+    token: string;
+  }): Promise<ChatTurnResult> {
+    this.pruneTelegramProjectPickEntries();
+    const pending = this.pendingTelegramProjectPicks.get(params.token);
+    if (!pending) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个项目选项已过期，请重新执行 /project。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+    const sameThread =
+      (pending.threadId ?? "").trim() === (params.message.threadId ?? "").trim();
+    if (
+      pending.channelId !== params.message.channelId ||
+      pending.chatId !== params.message.chatId ||
+      !sameThread
+    ) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个项目选项不属于当前对话，请重新执行 /project。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.pendingTelegramProjectPicks.delete(params.token);
+    if (pending.action === "page") {
+      const activeProjectKey = this.resolveActiveProjectKey(
+        params.conversationKey,
+        params.message,
+      );
+      await this.sendTelegramProjectPicker(
+        params.channel,
+        params.message,
+        activeProjectKey,
+        pending.page ?? 0,
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    const nextProjectKey = pending.projectKey?.trim();
+    if (!nextProjectKey) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "项目选择无效，请重新执行 /project。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+    this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
+    const projectName = decodeChannelSessionProjectKey(nextProjectKey);
+    await this.sendAuxiliaryMessage(
+      params.channel,
+      params.message,
+      `已切换 project：${projectName}\n后续新对话将绑定到该 project。`,
+    );
+    return this.emptyTurnResult(params.agentId, params.sessionId);
+  }
+
   private async promptTurnDecision(
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
@@ -1007,8 +1164,12 @@ export class ChannelGateway {
   private async sendTelegramSessionPicker(
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
+    projectKey: string,
   ): Promise<void> {
-    const sessions = this.orchestrator.sessions.list().slice(0, TELEGRAM_SESSION_PICK_MAX_ITEMS);
+    const sessions = this.listSessionsByProject(projectKey).slice(
+      0,
+      TELEGRAM_SESSION_PICK_MAX_ITEMS,
+    );
     if (sessions.length === 0) {
       return;
     }
@@ -1018,15 +1179,18 @@ export class ChannelGateway {
     for (const [index, session] of sessions.entries()) {
       const token = randomUUID();
       const sessionName = resolveSessionDisplayName(session);
-      this.pendingTelegramSessionPicks.set(token, {
+      const pending = {
         token,
         sessionId: session.id,
         sessionName,
         channelId: inbound.channelId,
         chatId: inbound.chatId,
-        threadId: inbound.threadId,
         createdAt: Date.now(),
-      });
+      } as PendingTelegramSessionPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramSessionPicks.set(token, pending);
       const callbackData = buildTelegramSessionPickCallbackData(token);
       if (!callbackData) {
         continue;
@@ -1046,7 +1210,148 @@ export class ChannelGateway {
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
       chatId: inbound.chatId,
-      text: "点击会话可查看该会话名称和最近 20 条 history：",
+      text: [
+        `当前 project：${decodeChannelSessionProjectKey(projectKey)}`,
+        "点击会话可查看该会话名称和最近 20 条 history：",
+      ].join("\n"),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: rows,
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramProjectPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    currentProjectKey: string,
+    page: number,
+  ): Promise<void> {
+    if (!this.projectRootDir) {
+      await this.sendAuxiliaryMessage(
+        channel,
+        inbound,
+        "未配置 project root，请先执行 `opencarapace config tui` 设置 runtime.project_root_dir。",
+      );
+      return;
+    }
+    const projects = this.listProjectsFromRoot();
+    if (projects.length === 0) {
+      await this.sendAuxiliaryMessage(
+        channel,
+        inbound,
+        `project root 下没有可选子目录：${this.projectRootDir}`,
+      );
+      return;
+    }
+    this.pruneTelegramProjectPickEntries();
+
+    const totalPages = Math.max(1, Math.ceil(projects.length / TELEGRAM_PROJECT_PICK_PAGE_SIZE));
+    const safePage = Math.min(totalPages - 1, Math.max(0, Math.floor(page)));
+    const start = safePage * TELEGRAM_PROJECT_PICK_PAGE_SIZE;
+    const items = projects.slice(start, start + TELEGRAM_PROJECT_PICK_PAGE_SIZE);
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    for (const project of items) {
+      const token = randomUUID();
+      const pending = {
+        token,
+        action: "select",
+        projectKey: project.key,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramProjectPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramProjectPicks.set(token, pending);
+      const callbackData = buildTelegramProjectPickCallbackData(token);
+      if (!callbackData) {
+        continue;
+      }
+      const marker = project.key === currentProjectKey ? "✅ " : "";
+      rows.push([
+        {
+          text: `${marker}${project.name}`,
+          callback_data: callbackData,
+        },
+      ]);
+    }
+
+    const navRow: Array<{ text: string; callback_data: string }> = [];
+    if (safePage > 0) {
+      const token = randomUUID();
+      const pending = {
+        token,
+        action: "page",
+        page: safePage - 1,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramProjectPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramProjectPicks.set(token, pending);
+      const callbackData = buildTelegramProjectPickCallbackData(token);
+      if (callbackData) {
+        navRow.push({
+          text: "◀ 上一页",
+          callback_data: callbackData,
+        });
+      }
+    }
+    if (safePage + 1 < totalPages) {
+      const token = randomUUID();
+      const pending = {
+        token,
+        action: "page",
+        page: safePage + 1,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramProjectPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramProjectPicks.set(token, pending);
+      const callbackData = buildTelegramProjectPickCallbackData(token);
+      if (callbackData) {
+        navRow.push({
+          text: safePage === 0 ? "更多 ▶" : "下一页 ▶",
+          callback_data: callbackData,
+        });
+      }
+    }
+    if (navRow.length > 0) {
+      rows.push(navRow);
+    }
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const end = Math.min(projects.length, start + items.length);
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: [
+        `Project root：${this.projectRootDir}`,
+        `当前 project：${decodeChannelSessionProjectKey(currentProjectKey)}`,
+        `Projects ${start + 1}-${end}/${projects.length}（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`,
+        "点击项目可切换，列表按最近使用时间排序。",
+      ].join("\n"),
       metadata: {
         telegram_reply_markup: {
           inline_keyboard: rows,
@@ -1072,6 +1377,89 @@ export class ChannelGateway {
         this.pendingTelegramSessionPicks.delete(token);
       }
     }
+  }
+
+  private pruneTelegramProjectPickEntries(): void {
+    const now = Date.now();
+    for (const [token, entry] of this.pendingTelegramProjectPicks.entries()) {
+      if (now - entry.createdAt > TELEGRAM_PROJECT_PICK_TTL_MS) {
+        this.pendingTelegramProjectPicks.delete(token);
+      }
+    }
+  }
+
+  private resolveActiveProjectKey(
+    conversationKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+  ): string {
+    const active = this.activeProjectsByConversation.get(conversationKey);
+    if (active) {
+      return active;
+    }
+    const inferred = this.inferLatestProjectForConversation(conversationKey, message);
+    const resolved = inferred ?? DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
+    this.activeProjectsByConversation.set(conversationKey, resolved);
+    return resolved;
+  }
+
+  private inferLatestProjectForConversation(
+    conversationKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+  ): string | undefined {
+    const fallbackSessionId = buildChannelSessionId(message);
+    const fallbackProject = resolveSessionProjectKey(fallbackSessionId);
+    for (const session of this.orchestrator.sessions.list()) {
+      const parsed = parseChannelSessionId(session.id);
+      if (parsed && parsed.conversationKey === conversationKey) {
+        return parsed.projectKey;
+      }
+      if (!parsed && session.id === fallbackSessionId) {
+        return fallbackProject;
+      }
+    }
+    return undefined;
+  }
+
+  private listSessionsByProject(projectKey: string): SessionRecord[] {
+    return this.orchestrator.sessions
+      .list()
+      .filter((session) => resolveSessionProjectKey(session.id) === projectKey);
+  }
+
+  private listProjectsFromRoot(): ProjectOption[] {
+    const root = this.projectRootDir;
+    if (!root) {
+      return [];
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const lastUsedByKey = new Map<string, number>();
+    for (const session of this.orchestrator.sessions.list()) {
+      const key = resolveSessionProjectKey(session.id);
+      const previous = lastUsedByKey.get(key) ?? 0;
+      if (session.updatedAt > previous) {
+        lastUsedByKey.set(key, session.updatedAt);
+      }
+    }
+    const projects = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const key = normalizeChannelSessionProjectKey(entry.name);
+        return {
+          key,
+          name: entry.name,
+          lastUsedAt: lastUsedByKey.get(key) ?? 0,
+        } satisfies ProjectOption;
+      });
+    projects.sort(
+      (left, right) =>
+        right.lastUsedAt - left.lastUsedAt || left.name.localeCompare(right.name),
+    );
+    return projects;
   }
 
   private enqueueStackedTurn(
