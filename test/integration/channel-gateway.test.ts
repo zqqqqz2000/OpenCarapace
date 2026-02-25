@@ -739,7 +739,10 @@ describe("ChannelGateway", () => {
     });
 
     expect(sessionsTurn.finalText).toContain("⟳ ");
-    expect(adapter.sent.some((message) => message.text.includes("⟳ "))).toBeTrue();
+    expect(adapter.sent.some((message) => message.text.includes("⟳ "))).toBeFalse();
+    expect(
+      adapter.sent.some((message) => message.text.includes("点击会话可查看该会话名称和最近 20 条 history")),
+    ).toBeTrue();
     await runningTurn;
   });
 

@@ -993,7 +993,13 @@ export class ChannelGateway {
         agentId,
         finalTextChars: decorated.finalText.length,
       });
-      await relay.finalize(decorated);
+      const shouldSuppressTelegramSessionsText =
+        channel.id === "telegram" && isSessionsCommandText(message.text);
+      if (shouldSuppressTelegramSessionsText) {
+        relay.dispose();
+      } else {
+        await relay.finalize(decorated);
+      }
       if (channel.id === "telegram" && isSessionsCommandText(message.text)) {
         await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
       }
