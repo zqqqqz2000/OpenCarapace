@@ -18,6 +18,20 @@ describe("config secrets", () => {
     expect(token).toBe("token-abc");
   });
 
+  test("expands ~ in *_file path", () => {
+    const dir = mkdtempSync(path.join(os.homedir(), "open-carapace-secret-home-"));
+    const tokenFile = path.join(dir, "token-home.txt");
+    writeFileSync(tokenFile, "token-home\n", "utf-8");
+    const homeRelative = `~/${path.relative(os.homedir(), tokenFile).replaceAll(path.sep, "/")}`;
+
+    const token = resolveSecretValue({
+      file: homeRelative,
+      configFilePath: path.join(os.tmpdir(), "dummy", "config.toml"),
+    });
+
+    expect(token).toBe("token-home");
+  });
+
   test("reads secret from @file inline syntax", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "open-carapace-secret-inline-"));
     const secretFile = path.join(dir, "inline.secret");

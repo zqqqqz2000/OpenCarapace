@@ -8,7 +8,7 @@ import { SessionManager, InMemorySessionStore } from "../../src/core/session.js"
 import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
 import { ToolRuntime } from "../../src/core/tools.js";
 import { CodexAgentAdapter } from "../../src/adapters/codex.js";
-import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
+import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
 import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills.js";
 import { createGrepWorkspaceTool } from "../../src/tools/grep-tool.js";
 import { createSkillLookupTool } from "../../src/tools/skill-tool.js";
@@ -22,7 +22,7 @@ function createServiceBundle(options?: {
 } {
   const registry = new AgentRegistry();
   registry.register(new CodexAgentAdapter());
-  registry.register(new CloudCodeAgentAdapter());
+  registry.register(new ClaudeCodeAgentAdapter());
 
   const skills = new SkillRuntime();
   skills.register(
@@ -103,9 +103,9 @@ describe("parseSlashCommand", () => {
   });
 
   test("handles quoted args", () => {
-    const parsed = parseSlashCommand("/agent \"cloudcode\"");
+    const parsed = parseSlashCommand("/agent \"claude-code\"");
     expect(parsed?.name).toBe("agent");
-    expect(parsed?.args).toEqual(["cloudcode"]);
+    expect(parsed?.args).toEqual(["claude-code"]);
   });
 
   test("returns null for non command input", () => {
@@ -135,11 +135,11 @@ describe("ConversationCommandService", () => {
     const result = service.execute({
       sessionId: "s1",
       currentAgentId: "codex",
-      input: "/agent cloudcode",
+      input: "/agent claude-code",
     });
 
     expect(result.handled).toBeTrue();
-    expect(result.agentId).toBe("cloudcode");
+    expect(result.agentId).toBe("claude-code");
     expect(result.finalText).toContain("Agent switched");
   });
 
@@ -290,6 +290,26 @@ describe("ConversationCommandService", () => {
 
     expect(status.handled).toBeTrue();
     expect(status.finalText).toContain("- codexContextUsage: 76561 used (limit unknown)");
+  });
+
+  test("clears codex and claude session bindings on /new", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.setMetadata("s-reset", "claude-code", {
+      codex_thread_id: "thread-x",
+      claude_session_id: "00000000-0000-4000-8000-000000000001",
+    });
+
+    const reset = service.execute({
+      sessionId: "s-reset",
+      currentAgentId: "claude-code",
+      input: "/new",
+    });
+    expect(reset.handled).toBeTrue();
+    expect(reset.finalText).toContain("claudeConversation: cleared");
+
+    const metadata = sessions.getMetadata("s-reset");
+    expect(metadata.codex_thread_id).toBe("");
+    expect(metadata.claude_session_id).toBe("");
   });
 
   test("stops running turn by /stop", () => {

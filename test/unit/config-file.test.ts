@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   defaultOpenCarapaceConfig,
@@ -15,6 +15,11 @@ describe("config file", () => {
   test("resolves default config path under ~/.config/opencarapace", () => {
     const resolved = resolveOpenCarapaceConfigPath();
     expect(resolved).toContain(path.join(".config", "opencarapace", "config.toml"));
+  });
+
+  test("expands ~ in explicit config path", () => {
+    const resolved = resolveOpenCarapaceConfigPath("~/tmp/opencarapace.toml");
+    expect(resolved).toBe(path.join(os.homedir(), "tmp", "opencarapace.toml"));
   });
 
   test("saves and loads config toml", () => {
@@ -52,5 +57,14 @@ describe("config file", () => {
   test("default config sets project root under ~/Documents", () => {
     const config = defaultOpenCarapaceConfig();
     expect(config.runtime?.project_root_dir).toBe(path.resolve(os.homedir(), "Documents"));
+  });
+
+  test("throws on invalid toml by default, can opt out via strict=false", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "open-carapace-config-parse-"));
+    const filePath = path.join(dir, "broken.toml");
+    writeFileSync(filePath, "[runtime\nport = 3000", "utf-8");
+
+    expect(() => loadOpenCarapaceConfig({ path: filePath })).toThrow(/failed to parse config/i);
+    expect(loadOpenCarapaceConfig({ path: filePath, strict: false })).toEqual({});
   });
 });

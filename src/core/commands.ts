@@ -435,6 +435,7 @@ export class ConversationCommandService {
         }
         this.deps.sessions.setMetadata(params.sessionId, next.agentId, {
           codex_thread_id: "",
+          claude_session_id: "",
           session_name: "",
           session_name_source: "",
         });
@@ -445,6 +446,7 @@ export class ConversationCommandService {
             `- session: ${next.id}`,
             `- agent: ${next.agentId}`,
             "- codexThread: cleared",
+            "- claudeConversation: cleared",
           ].join("\n"),
           agentId: next.agentId,
         };
@@ -541,7 +543,7 @@ export class ConversationCommandService {
       "- /sessions: list recent sessions",
       "- /project: show current project and open picker in Telegram",
       "- /session: show current session details",
-      "- /agent [agentId]: show or switch agent (codex/cloudcode/claude-code)",
+      "- /agent [agentId]: show or switch agent (codex/claude-code)",
       "- /model [name|clear]: show or set model preference for current session",
       "- /depth [low|medium|high|clear]: show or set thinking depth",
       "- /sandbox [read-only|workspace-write|danger-full-access|clear]: set codex sandbox mode",
@@ -577,6 +579,10 @@ export class ConversationCommandService {
       typeof metadata.codex_thread_id === "string" && metadata.codex_thread_id.trim()
         ? metadata.codex_thread_id.trim()
         : "(none)";
+    const claudeConversation =
+      typeof metadata.claude_session_id === "string" && metadata.claude_session_id.trim()
+        ? metadata.claude_session_id.trim()
+        : "(none)";
     const codexUsage = metadata.codex_usage_snapshot;
     const codexContext = formatCodexContextUsage(codexUsage);
     return [
@@ -589,6 +595,7 @@ export class ConversationCommandService {
       `- thinkingDepth: ${thinkingDepth}`,
       `- sandbox: ${sandboxMode}`,
       `- codexThread: ${codexThread}`,
+      `- claudeConversation: ${claudeConversation}`,
       `- codexContextUsage: ${codexContext}`,
       `- skills: ${skills.length}`,
       "Hint: use /help to see all commands.",
@@ -699,6 +706,10 @@ export class ConversationCommandService {
       typeof metadata.codex_thread_id === "string" && metadata.codex_thread_id.trim()
         ? metadata.codex_thread_id.trim()
         : "(none)";
+    const claudeConversation =
+      typeof metadata.claude_session_id === "string" && metadata.claude_session_id.trim()
+        ? metadata.claude_session_id.trim()
+        : "(none)";
     if (!session) {
       return [
         "Current session",
@@ -708,6 +719,7 @@ export class ConversationCommandService {
         `- thinkingDepth: ${thinkingDepth}`,
         `- sandbox: ${sandboxMode}`,
         `- codexThread: ${codexThread}`,
+        `- claudeConversation: ${claudeConversation}`,
         "- state: not initialized yet",
       ].join("\n");
     }
@@ -723,6 +735,7 @@ export class ConversationCommandService {
       `- thinkingDepth: ${thinkingDepth}`,
       `- sandbox: ${sandboxMode}`,
       `- codexThread: ${codexThread}`,
+      `- claudeConversation: ${claudeConversation}`,
     ].join("\n");
   }
 

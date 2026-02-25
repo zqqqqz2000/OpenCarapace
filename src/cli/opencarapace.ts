@@ -15,6 +15,11 @@ import { runChatCli } from "./chat.js";
 import { runGateway } from "./gateway.js";
 import { runServer } from "./server.js";
 
+const SUPPORTED_AGENT_IDS = ["codex", "claude-code"] as const;
+const ROUTABLE_CHANNEL_IDS = ["telegram", "slack", "discord", "wechat"] as const;
+
+type SupportedAgentId = (typeof SUPPORTED_AGENT_IDS)[number];
+
 function usage(): string {
   return [
     "OpenCarapace CLI",
@@ -104,11 +109,14 @@ function parseNumberInput(raw: string, fallback: number): number {
   if (!trimmed) {
     return fallback;
   }
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
+  if (!/^\d+$/.test(trimmed)) {
+    return NaN;
   }
-  return Math.max(1, Math.floor(parsed));
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    return NaN;
+  }
+  return parsed;
 }
 
 async function promptTextInput(
@@ -147,8 +155,25 @@ async function promptNumberInput(
   fallback: number,
   placeholder?: string,
 ): Promise<number> {
-  const raw = await promptTextInput(message, String(fallback), placeholder);
-  return parseNumberInput(raw, fallback);
+  while (true) {
+    const raw = await promptTextInput(message, String(fallback), placeholder);
+    const parsed = parseNumberInput(raw, fallback);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+    note("请输入正整数（>= 1），留空可保留当前值。", "Input validation");
+  }
+}
+
+function normalizeAgentId(raw: string | undefined): SupportedAgentId | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const normalized = raw.trim();
+  if (normalized === "codex" || normalized === "claude-code") {
+    return normalized;
+  }
+  return undefined;
 }
 
 function renderCurrentSummary(config: OpenCarapaceConfig): string {
@@ -156,7 +181,6 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
   const sessionStoreFile = config.runtime?.session_store_file ?? "sessions.json";
   const projectRootDir = config.runtime?.project_root_dir ?? "";
   const codex = config.agents?.codex;
-  const cloudcode = config.agents?.cloudcode;
   const claude = config.agents?.claude_code;
   const telegram = config.channels?.telegram;
   const slack = config.channels?.slack;
@@ -169,7 +193,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
     `- default agent: ${defaultAgent}`,
     `- session store: ${sessionStoreFile}`,
     `- project root: ${projectRootDir || "(required in config tui, subdirectories are projects)"}`,
-    `- agents: codex=${codex?.enabled ?? true}, cloudcode=${cloudcode?.enabled ?? false}, claude-code=${claude?.enabled ?? false}`,
+    `- agents: codex=${codex?.enabled ?? true}, claude-code=${claude?.enabled ?? false}`,
     `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}, wechat=${wechat?.enabled ?? false}`,
     `- openclaw catalog: ${skills?.enable_openclaw_catalog ?? true}`,
   ].join("\n");
@@ -177,7 +201,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
 
 async function configureAgentBlock(params: {
   config: OpenCarapaceConfig;
-  key: "codex" | "cloudcode" | "claude_code";
+  key: "codex" | "claude_code";
   displayName: string;
   defaultEnabled: boolean;
   defaultCommand?: string;
@@ -193,18 +217,36 @@ async function configureAgentBlock(params: {
       initialValue: enabledCurrent,
     }),
   );
+  if (!enabled) {
+    config.agents = {
+      ...(config.agents ?? {}),
+      [params.key]: {
+        ...current,
+        enabled: false,
+      },
+    };
+    note(`${params.displayName} disabled. Skipped command/args prompts.`, params.displayName);
+    return;
+  }
 
   const commandCurrent = current.cli_command ?? params.defaultCommand ?? "";
   const argsCurrent = current.cli_args ?? params.defaultArgs ?? [];
+  const argsFileCurrent = current.cli_args_file ?? "";
+  const commandPlaceholder = params.defaultCommand ?? params.displayName.toLowerCase().replace(/\s+/g, "-");
   const command = await promptNormalizedInput(
     `${params.displayName} CLI command ("-" to clear)`,
     commandCurrent,
-    "codex",
+    commandPlaceholder,
   );
   const argsText = await promptNormalizedInput(
     `${params.displayName} CLI args, space-separated ("-" to clear)`,
     argsCurrent.join(" "),
     "exec {{prompt}}",
+  );
+  const argsFile = await promptNormalizedInput(
+    `${params.displayName} CLI args file (optional, takes effect when args are empty; "-" to clear)`,
+    argsFileCurrent,
+    "/path/to/args.txt",
   );
 
   config.agents = {
@@ -214,7 +256,7 @@ async function configureAgentBlock(params: {
       enabled,
       cli_command: command || "",
       cli_args: argsText ? argsText.split(/\s+/g).filter(Boolean) : [],
-      cli_args_file: current.cli_args_file ?? "",
+      cli_args_file: argsFile || "",
     },
   };
 }
@@ -226,10 +268,9 @@ async function configureRuntimeAndAgents(
   const defaultAgent = guardCancel(
     await select({
       message: "Default agent",
-      initialValue: defaultAgentCurrent,
+      initialValue: normalizeAgentId(defaultAgentCurrent) ?? "codex",
       options: [
         { value: "codex", label: "codex" },
-        { value: "cloudcode", label: "cloudcode" },
         { value: "claude-code", label: "claude-code" },
       ],
     }),
@@ -291,15 +332,11 @@ async function configureRuntimeAndAgents(
   });
   await configureAgentBlock({
     config,
-    key: "cloudcode",
-    displayName: "CloudCode",
-    defaultEnabled: false,
-  });
-  await configureAgentBlock({
-    config,
     key: "claude_code",
     displayName: "Claude Code",
     defaultEnabled: false,
+    defaultCommand: "claude",
+    defaultArgs: ["-p", "{{prompt}}"],
   });
 
   note("Updated runtime and agent settings in memory.", "Runtime & Agents");
@@ -316,6 +353,17 @@ async function configureTelegramChannel(
       initialValue: enabledCurrent,
     }),
   );
+  if (!enabled) {
+    config.channels = {
+      ...(config.channels ?? {}),
+      telegram: {
+        ...current,
+        enabled: false,
+      },
+    };
+    note("Telegram disabled. Skipped token/chat prompts.", "Telegram");
+    return;
+  }
   const token = await promptNormalizedInput(
     'Telegram token (supports @file:/path, "-" to clear)',
     current.token,
@@ -374,6 +422,17 @@ async function configureBridgeChannel(
       initialValue: enabledCurrent,
     }),
   );
+  if (!enabled) {
+    config.channels = {
+      ...(config.channels ?? {}),
+      [key]: {
+        ...current,
+        enabled: false,
+      },
+    };
+    note(`${displayName} disabled. Skipped secret/webhook prompts.`, displayName);
+    return;
+  }
   const inboundSecret = await promptNormalizedInput(
     `${displayName} inbound secret (supports @file:/path, "-" to clear)`,
     current.inbound_secret,
@@ -411,43 +470,53 @@ async function configureBridgeChannel(
 }
 
 async function configureChannelRouting(config: OpenCarapaceConfig): Promise<void> {
-  const defaultRouteCurrent =
+  const defaultRouteCurrentRaw =
     config.channels?.routing?.default_agent_id ?? config.runtime?.default_agent_id ?? "codex";
+  const defaultRouteCurrent = normalizeAgentId(defaultRouteCurrentRaw) ?? "codex";
   const defaultRoute = guardCancel(
     await select({
       message: "Default routed agent",
       initialValue: defaultRouteCurrent,
       options: [
         { value: "codex", label: "codex" },
-        { value: "cloudcode", label: "cloudcode" },
         { value: "claude-code", label: "claude-code" },
       ],
     }),
-  );
-  const entriesCurrent = Object.entries(config.channels?.routing?.entries ?? {})
-    .map(([channel, agent]) => `${channel}:${agent}`)
-    .join(",");
-  const entriesRaw = await promptNormalizedInput(
-    'Per-channel routes CSV channel:agent ("-" to clear)',
-    entriesCurrent,
-    "telegram:codex,slack:cloudcode",
-  );
+  ) as SupportedAgentId;
+  const entriesCurrent = config.channels?.routing?.entries ?? {};
   const entries = {} as Record<string, string>;
-  for (const item of (entriesRaw ?? "").split(",")) {
-    const trimmed = item.trim();
-    if (!trimmed) {
+  for (const channelId of ROUTABLE_CHANNEL_IDS) {
+    const currentAgent = normalizeAgentId(entriesCurrent[channelId]);
+    const selected = guardCancel(
+      await select({
+        message: `Route for ${channelId}`,
+        initialValue: currentAgent && currentAgent !== defaultRoute ? currentAgent : "default",
+        options: [
+          { value: "default", label: `inherit default (${defaultRoute})` },
+          { value: "codex", label: "codex" },
+          { value: "claude-code", label: "claude-code" },
+        ],
+      }),
+    );
+    if (selected === "default") {
       continue;
     }
-    const separator = trimmed.indexOf(":");
-    if (separator < 0) {
+    const normalized = normalizeAgentId(String(selected));
+    if (!normalized) {
       continue;
     }
-    const channel = trimmed.slice(0, separator).trim();
-    const agent = trimmed.slice(separator + 1).trim();
-    if (!channel || !agent) {
+    entries[channelId] = normalized;
+  }
+  for (const [channelId, agentRaw] of Object.entries(entriesCurrent)) {
+    if ((ROUTABLE_CHANNEL_IDS as readonly string[]).includes(channelId)) {
       continue;
     }
-    entries[channel] = agent;
+    const normalized = normalizeAgentId(agentRaw);
+    if (!normalized) {
+      note(`Dropped invalid route: ${channelId}:${agentRaw}`, "Routing");
+      continue;
+    }
+    entries[channelId] = normalized;
   }
 
   config.channels = {

@@ -1,5 +1,4 @@
 import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
-import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
 import { CodexAgentAdapter, DeterministicCodexBackend } from "../../src/adapters/codex.js";
 import { HookAgentBackend } from "../../src/adapters/backend.js";
 import { AgentRegistry } from "../../src/core/agent.js";
@@ -24,13 +23,6 @@ export function createDeterministicOrchestrator(): ChatOrchestrator {
   });
 
   registry.register(new CodexAgentAdapter({ backend: new DeterministicCodexBackend() }));
-  registry.register(
-    new CloudCodeAgentAdapter(
-      new HookAgentBackend(async () => ({
-        finalText: "CloudCode deterministic test backend response.",
-      })),
-    ),
-  );
   registry.register(
     new ClaudeCodeAgentAdapter(
       new HookAgentBackend(async () => ({

@@ -1,15 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { expandHomePath } from "./path.js";
 
 function normalizePath(rawPath: string, baseDir: string): string {
-  const trimmed = rawPath.trim();
-  if (!trimmed) {
-    return trimmed;
+  const expanded = expandHomePath(rawPath);
+  if (!expanded) {
+    return expanded;
   }
-  if (path.isAbsolute(trimmed)) {
-    return trimmed;
+  if (path.isAbsolute(expanded)) {
+    return expanded;
   }
-  return path.resolve(baseDir, trimmed);
+  return path.resolve(baseDir, expanded);
 }
 
 function readSecretFile(filePath: string): string | undefined {

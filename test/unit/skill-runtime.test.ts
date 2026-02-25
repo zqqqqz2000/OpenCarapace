@@ -27,10 +27,10 @@ describe("SkillRuntime", () => {
     );
     runtime.register(
       new InstructionSkill({
-        id: "cloudcode.runtime.rule",
-        description: "cloud rule",
-        instruction: "for cloud only",
-        appliesTo: ["cloudcode"],
+        id: "claude.runtime.rule",
+        description: "claude rule",
+        instruction: "for claude only",
+        appliesTo: ["claude-code"],
       }),
     );
 

@@ -22,12 +22,6 @@ export type OpenCarapaceConfig = {
       cli_args?: string[];
       cli_args_file?: string;
     };
-    cloudcode?: {
-      enabled?: boolean;
-      cli_command?: string;
-      cli_args?: string[];
-      cli_args_file?: string;
-    };
     claude_code?: {
       enabled?: boolean;
       cli_command?: string;

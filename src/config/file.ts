@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { OpenCarapaceConfig } from "./types.js";
+import { expandHomePath } from "./path.js";
 
 const DEFAULT_CONFIG_RELATIVE = ".config/opencarapace/config.toml";
 
@@ -74,7 +75,7 @@ function safeParseToml(input: string): unknown {
 export function resolveOpenCarapaceConfigPath(explicitPath?: string): string {
   const override = explicitPath?.trim();
   if (override) {
-    return path.resolve(override);
+    return path.resolve(expandHomePath(override));
   }
   return path.resolve(os.homedir(), DEFAULT_CONFIG_RELATIVE);
 }
@@ -93,9 +94,6 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
         enabled: true,
         cli_command: "codex",
         cli_args: ["exec", "{{prompt}}"],
-      },
-      cloudcode: {
-        enabled: false,
       },
       claude_code: {
         enabled: false,
@@ -157,12 +155,12 @@ export function loadOpenCarapaceConfig(params?: {
     }
     return parsed as OpenCarapaceConfig;
   } catch (error) {
-    if (params?.strict) {
-      throw new Error(
-        `failed to parse config at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    if (params?.strict === false) {
+      return {};
     }
-    return {};
+    throw new Error(
+      `failed to parse config at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

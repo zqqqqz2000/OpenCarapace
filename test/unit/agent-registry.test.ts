@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { AgentRegistry } from "../../src/core/agent.js";
 import { CodexAgentAdapter } from "../../src/adapters/codex.js";
-import { CloudCodeAgentAdapter } from "../../src/adapters/cloudcode.js";
+import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
 
 describe("AgentRegistry", () => {
   test("register and resolve adapters", () => {
     const registry = new AgentRegistry();
     registry.register(new CodexAgentAdapter());
-    registry.register(new CloudCodeAgentAdapter());
+    registry.register(new ClaudeCodeAgentAdapter());
 
     expect(registry.get("codex")?.displayName).toBe("Codex");
-    expect(registry.get("cloudcode")?.displayName).toBe("CloudCode");
+    expect(registry.get("claude-code")?.displayName).toBe("Claude Code");
     expect(registry.list().length).toBe(2);
   });
 

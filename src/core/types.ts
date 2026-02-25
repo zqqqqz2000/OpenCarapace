@@ -1,4 +1,4 @@
-export type AgentId = "codex" | "cloudcode" | "claude-code" | (string & {});
+export type AgentId = "codex" | "claude-code" | (string & {});
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 

@@ -45,7 +45,7 @@ describe("channel factory from config", () => {
         routing: {
           entries: {
             telegram: "codex",
-            slack: "cloudcode",
+            slack: "claude-code",
           },
         },
       },
@@ -53,6 +53,26 @@ describe("channel factory from config", () => {
 
     expect(routing.defaultAgentId).toBe("codex");
     expect(routing.perChannel?.telegram).toBe("codex");
-    expect(routing.perChannel?.slack).toBe("cloudcode");
+    expect(routing.perChannel?.slack).toBe("claude-code");
+  });
+
+  test("drops invalid routed agents and keeps valid ones", () => {
+    const routing = resolveChannelAgentRoutingFromConfig({
+      runtime: {
+        default_agent_id: "legacy-cloudcode",
+      },
+      channels: {
+        routing: {
+          entries: {
+            slack: "cloudcode",
+            discord: "claude-code",
+          },
+        },
+      },
+    });
+
+    expect(routing.defaultAgentId).toBe("codex");
+    expect(routing.perChannel?.slack).toBeUndefined();
+    expect(routing.perChannel?.discord).toBe("claude-code");
   });
 });

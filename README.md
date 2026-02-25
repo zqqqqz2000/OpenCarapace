@@ -7,7 +7,7 @@ Channel-first orchestration for code agents on Bun.
 ## Tested Scope
 
 - End-to-end tested: `Codex` agent + `Telegram` channel.
-- Not fully verified yet: `CloudCode`, `Claude Code`, and bridge channels (`Slack` / `Discord` / `WeChat`).
+- Not fully verified yet: `Claude Code` and bridge channels (`Slack` / `Discord` / `WeChat`).
 
 ## Channel Usage (Recommended)
 

@@ -6,6 +6,17 @@ import { BridgeChannelAdapter } from "./bridge.js";
 import { TelegramChannelAdapter } from "./telegram.js";
 import type { ChannelAgentRouting, ChannelId } from "./types.js";
 
+function normalizeRoutedAgentId(raw: string | undefined): AgentId | undefined {
+  const normalized = raw?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "codex" || normalized === "claude-code") {
+    return normalized;
+  }
+  return undefined;
+}
+
 function resolveSecret(params: {
   value: string | undefined;
   file: string | undefined;
@@ -166,17 +177,16 @@ export function createChannelRegistryFromConfig(params?: {
 }
 
 export function resolveChannelAgentRoutingFromConfig(config?: OpenCarapaceConfig): ChannelAgentRouting {
-  const defaultAgentId = (
-    config?.channels?.routing?.default_agent_id?.trim() ||
-    config?.runtime?.default_agent_id?.trim() ||
-    "codex"
-  ) as AgentId;
+  const defaultAgentId =
+    normalizeRoutedAgentId(config?.channels?.routing?.default_agent_id) ??
+    normalizeRoutedAgentId(config?.runtime?.default_agent_id) ??
+    "codex";
   const perChannel: Partial<Record<ChannelId, AgentId>> = {};
 
   const configEntries = config?.channels?.routing?.entries ?? {};
   for (const [channelIdRaw, agentIdRaw] of Object.entries(configEntries)) {
     const channelId = channelIdRaw.trim() as ChannelId;
-    const agentId = agentIdRaw.trim() as AgentId;
+    const agentId = normalizeRoutedAgentId(agentIdRaw);
     if (!channelId || !agentId) {
       continue;
     }

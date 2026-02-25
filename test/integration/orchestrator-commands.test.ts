@@ -21,27 +21,27 @@ describe("ChatOrchestrator commands", () => {
 
     const switched = await orchestrator.chat({
       sessionId: "cmd-agent-1",
-      input: "/agent cloudcode",
+      input: "/agent claude-code",
     });
-    expect(switched.agentId).toBe("cloudcode");
+    expect(switched.agentId).toBe("claude-code");
     expect(switched.finalText).toContain("Agent switched");
 
     const status = await orchestrator.chat({
       sessionId: "cmd-agent-1",
       input: "/status",
     });
-    expect(status.agentId).toBe("cloudcode");
-    expect(status.finalText).toContain("- agent: cloudcode");
+    expect(status.agentId).toBe("claude-code");
+    expect(status.finalText).toContain("- agent: claude-code");
 
     const turn = await orchestrator.chat({
       sessionId: "cmd-agent-1",
       input: "请给我一句执行状态。",
     });
-    expect(turn.agentId).toBe("cloudcode");
-    expect(turn.finalText).toContain("CloudCode deterministic test backend response.");
+    expect(turn.agentId).toBe("claude-code");
+    expect(turn.finalText).toContain("Claude Code deterministic test backend response.");
 
     const session = orchestrator.sessions.snapshot("cmd-agent-1");
-    expect(session?.agentId).toBe("cloudcode");
+    expect(session?.agentId).toBe("claude-code");
     expect(session?.messages.length).toBe(2);
   });
 

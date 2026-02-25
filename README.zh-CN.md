@@ -7,7 +7,7 @@ Language: [English](./README.md) | **简体中文**
 ## 测试范围说明
 
 - 已完成端到端验证：`Codex` agent + `Telegram` channel。
-- 尚未完整验证：`CloudCode`、`Claude Code`、以及桥接渠道（`Slack` / `Discord` / `WeChat`）。
+- 尚未完整验证：`Claude Code` 以及桥接渠道（`Slack` / `Discord` / `WeChat`）。
 
 ## 用法（仅 Channel 方案）
 

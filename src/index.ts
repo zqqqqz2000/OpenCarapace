@@ -1,10 +1,10 @@
 import path from "node:path";
-import { CloudCodeAgentAdapter, createCloudCodeCliBackend } from "./adapters/cloudcode.js";
 import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/claudecode.js";
 import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex.js";
 import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory.js";
 import { ChannelGateway } from "./channels/gateway.js";
 import {
+  expandHomePath,
   loadOpenCarapaceConfig,
   resolveOpenCarapaceConfigPath,
   resolveStringListFromFile,
@@ -46,7 +46,6 @@ export * from "./config/index.js";
 export * from "./integrations/openclaw-skills.js";
 export * from "./adapters/backend.js";
 export * from "./adapters/codex.js";
-export * from "./adapters/cloudcode.js";
 export * from "./adapters/claudecode.js";
 export * from "./presets/skill-packs.js";
 export * from "./presets/tool-packs.js";
@@ -77,7 +76,7 @@ function resolvePathFromConfig(params: {
   fallbackFileName: string;
 }): string {
   const baseDir = path.dirname(params.configPath);
-  const raw = params.rawPath?.trim();
+  const raw = params.rawPath ? expandHomePath(params.rawPath) : "";
   if (raw) {
     return path.isAbsolute(raw) ? raw : path.resolve(baseDir, raw);
   }
@@ -97,7 +96,7 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
       fallbackFileName: "sessions.json",
     }),
   });
-  const workspaceRootRaw = config.runtime?.workspace_root?.trim();
+  const workspaceRootRaw = config.runtime?.workspace_root ? expandHomePath(config.runtime.workspace_root) : "";
   const workspaceRoot = workspaceRootRaw
     ? path.isAbsolute(workspaceRootRaw)
       ? workspaceRootRaw
@@ -147,40 +146,6 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
       titleGeneratorParams.command = command;
     }
     sessionTitleGenerator = createCodexSessionTitleGenerator(titleGeneratorParams) ?? undefined;
-  }
-  if (isEnabled(config.agents?.cloudcode?.enabled, false)) {
-    const cloudcodeArgsParams = {} as {
-      values?: string[];
-      file?: string;
-      configFilePath?: string;
-    };
-    if (config.agents?.cloudcode?.cli_args) {
-      cloudcodeArgsParams.values = config.agents.cloudcode.cli_args;
-    }
-    if (config.agents?.cloudcode?.cli_args_file) {
-      cloudcodeArgsParams.file = config.agents.cloudcode.cli_args_file;
-    }
-    cloudcodeArgsParams.configFilePath = configPath;
-    const cloudcodeArgs = resolveStringListFromFile(cloudcodeArgsParams) ?? [];
-
-    const cloudcodeParams = {
-      args: cloudcodeArgs,
-    } as {
-      command?: string;
-      args: string[];
-    };
-    const cloudcodeCommand = config.agents?.cloudcode?.cli_command?.trim();
-    if (cloudcodeCommand) {
-      cloudcodeParams.command = cloudcodeCommand;
-    }
-
-    const cloudcodeBackend = createCloudCodeCliBackend(cloudcodeParams);
-    if (!cloudcodeBackend) {
-      throw new Error(
-        "agents.cloudcode.enabled=true but cli_command is missing in config.toml.",
-      );
-    }
-    registry.register(new CloudCodeAgentAdapter(cloudcodeBackend));
   }
   if (isEnabled(config.agents?.claude_code?.enabled, false)) {
     const claudeArgsParams = {} as {
@@ -256,7 +221,7 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
 
 export function createDefaultChannelGateway(options?: RuntimeBootstrapOptions & { orchestrator?: ChatOrchestrator }): ChannelGateway {
   const { config, configPath } = resolveRuntimeConfig(options);
-  const projectRootRaw = config.runtime?.project_root_dir?.trim();
+  const projectRootRaw = config.runtime?.project_root_dir ? expandHomePath(config.runtime.project_root_dir) : "";
   const projectRootDir = projectRootRaw
     ? path.isAbsolute(projectRootRaw)
       ? projectRootRaw

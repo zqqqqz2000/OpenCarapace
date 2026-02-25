@@ -27,9 +27,6 @@ describe("E2E real codex (optional)", () => {
           cli_command: command,
           cli_args: args,
         },
-        cloudcode: {
-          enabled: false,
-        },
         claude_code: {
           enabled: false,
         },

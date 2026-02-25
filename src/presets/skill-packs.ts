@@ -3,6 +3,7 @@ import type { SkillRuntime } from "../core/skills.js";
 import { InstructionSkill } from "../core/skills.js";
 import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill.js";
 import type { OpenCarapaceConfig } from "../config/types.js";
+import { expandHomePath } from "../config/path.js";
 import {
   createOpenClawCatalogSkill,
   type OpenClawCatalogSkill,
@@ -18,7 +19,7 @@ function resolveOpenClawRoots(config?: OpenCarapaceConfig): string[] | undefined
   const roots = [] as string[];
   const openclawRoot = config?.skills?.openclaw_root?.trim();
   if (openclawRoot) {
-    roots.push(path.resolve(openclawRoot, "skills"));
+    roots.push(path.resolve(expandHomePath(openclawRoot), "skills"));
   }
   const extra = config?.skills?.openclaw_skill_dirs ?? [];
   for (const item of extra) {
@@ -26,7 +27,7 @@ function resolveOpenClawRoots(config?: OpenCarapaceConfig): string[] | undefined
     if (!normalized) {
       continue;
     }
-    roots.push(path.resolve(normalized));
+    roots.push(path.resolve(expandHomePath(normalized)));
   }
   return roots.length > 0 ? roots : undefined;
 }
@@ -57,24 +58,6 @@ export function registerDefaultSkills(
       description: "Codex final result must be short and readable.",
       appliesTo: ["codex"],
       instruction: "最终答复保持短、清晰、可执行，优先使用分点，不要堆叠冗长段落。",
-    }),
-  );
-
-  runtime.register(
-    new InstructionSkill({
-      id: "cloudcode.infra.safe",
-      description: "CloudCode should prioritize safe infra and rollback-minded plans.",
-      appliesTo: ["cloudcode"],
-      instruction: "优先给出可回滚、可观测的基础设施变更方案，并标注风险边界。",
-    }),
-  );
-
-  runtime.register(
-    new InstructionSkill({
-      id: "cloudcode.cost.control",
-      description: "CloudCode should consider runtime and cloud cost impact.",
-      appliesTo: ["cloudcode"],
-      instruction: "方案中应明确资源和成本影响，并优先选择轻量实现。",
     }),
   );
 

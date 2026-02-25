@@ -34,7 +34,7 @@ function parseArgs(argv: string[]): { sessionId: string; input: string; agentId?
 
   if (!agentId && args.length >= 3) {
     const legacyCandidate = args[0];
-    if (legacyCandidate === "codex" || legacyCandidate === "cloudcode" || legacyCandidate === "claude-code") {
+    if (legacyCandidate === "codex" || legacyCandidate === "claude-code") {
       agentId = legacyCandidate;
       args.shift();
     }
