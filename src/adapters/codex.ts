@@ -57,6 +57,19 @@ function hasSandboxOption(args: string[]): boolean {
   return false;
 }
 
+function hasSkipGitRepoCheckOption(args: string[]): boolean {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--skip-git-repo-check") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function resolveSessionMetadata(request: BackendRunRequest): Record<string, unknown> {
   if (!isRecord(request.metadata)) {
     return {};
@@ -306,6 +319,9 @@ async function runCodexSessionTitle(params: {
   }
 
   const args = ["exec", "--json", ...params.baseArgs];
+  if (!hasSkipGitRepoCheckOption(args)) {
+    args.push("--skip-git-repo-check");
+  }
   if (params.model && !hasModelOption(args)) {
     args.push("--model", params.model);
   }
@@ -510,6 +526,9 @@ class CodexCliSessionBackend implements AgentBackend {
     const prompt = composePrompt(request, thinkingDepth);
 
     const args = ["exec", "--json", ...this.options.baseArgs];
+    if (!hasSkipGitRepoCheckOption(args)) {
+      args.push("--skip-git-repo-check");
+    }
     if (preferredModel && !hasModelOption(args)) {
       args.push("--model", preferredModel);
     }

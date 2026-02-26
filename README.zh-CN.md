@@ -49,6 +49,7 @@ bun run opencarapace gateway
 
 - 在 Telegram 对话中发消息触发 Codex。
 - 常用命令：`/help`、`/status`、`/new`、`/model`、`/depth`、`/sandbox`。
+- 作用域说明：`/model` 与 `/depth` 为全局共享；`/sandbox` 按工作区（project）共享。
 - Telegram 附件会下载到本地临时目录，并注入到 prompt 上下文。
 
 ## 渠道模式

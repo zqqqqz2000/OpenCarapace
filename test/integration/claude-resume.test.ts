@@ -66,7 +66,7 @@ function createOrchestratorWithFakeClaude(
 }
 
 describe("Claude session continuity", () => {
-  test("reuses --session-id across turns and clears it on /new", async () => {
+  test("reuses --session-id across turns and /new switches to a fresh session", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-claude-session-"));
     const scriptPath = path.join(root, "fake-claude.mjs");
     const callLogPath = path.join(root, "calls.json");
@@ -92,17 +92,23 @@ describe("Claude session continuity", () => {
     });
     expect(second.finalText).toContain(`reply@${firstSessionId}`);
 
-    await orchestrator.chat({
+    const created = await orchestrator.chat({
       sessionId: "s-claude",
       input: "/new",
     });
+    expect(created.finalText).toContain("Started a new session.");
+    expect(created.sessionId).not.toBe("s-claude");
+    const nextSessionId = created.sessionId;
     const third = await orchestrator.chat({
-      sessionId: "s-claude",
+      sessionId: nextSessionId,
       input: "third",
     });
     expect(third.finalText).toContain("reply@");
 
-    const thirdMetadata = orchestrator.sessions.getMetadata("s-claude");
+    const oldMetadata = orchestrator.sessions.getMetadata("s-claude");
+    expect(String(oldMetadata.claude_session_id ?? "")).toBe(firstSessionId);
+
+    const thirdMetadata = orchestrator.sessions.getMetadata(nextSessionId);
     const thirdSessionId = String(thirdMetadata.claude_session_id ?? "");
     expect(thirdSessionId.length).toBeGreaterThan(0);
     expect(thirdSessionId).not.toBe(firstSessionId);

@@ -110,10 +110,12 @@ export class ChatOrchestrator {
       input: params.input,
     });
     if (commandResult.handled) {
+      const effectiveSessionId = commandResult.sessionId ?? params.sessionId;
       return await this.emitCommandTurn(
         params,
         commandResult.agentId ?? initialAgentId,
         commandResult.finalText,
+        effectiveSessionId,
       );
     }
 
@@ -409,8 +411,9 @@ export class ChatOrchestrator {
     params: ChatTurnParams,
     agentId: AgentId,
     text: string | undefined,
+    sessionId: string,
   ): Promise<ChatTurnResult> {
-    const result = this.commandTurn(params.sessionId, agentId, text);
+    const result = this.commandTurn(sessionId, agentId, text);
     if (params.onEvent) {
       for (const event of result.events) {
         await params.onEvent(event);
@@ -422,12 +425,6 @@ export class ChatOrchestrator {
   private commandTurn(sessionId: string, agentId: AgentId, text: string | undefined): ChatTurnResult {
     const normalized = this.readability.normalize((text ?? "Command handled.").trim());
     const events: AgentEvent[] = [
-      {
-        type: "status",
-        phase: "running",
-        message: "正在执行会话命令。",
-        at: now(),
-      },
       {
         type: "result",
         text: normalized,

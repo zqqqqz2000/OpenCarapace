@@ -20,6 +20,15 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
 } from "./telegram-project-picker.js";
 import {
+  buildTelegramDepthCallbackData,
+  buildTelegramModelCallbackData,
+  buildTelegramSandboxCallbackData,
+} from "./telegram-preferences-picker.js";
+import {
+  buildTelegramRenamePickCallbackData,
+  TELEGRAM_RENAME_PICK_META_TOKEN,
+} from "./telegram-rename-picker.js";
+import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_SESSION_ID,
   TELEGRAM_SESSION_PICK_META_SESSION_NAME,
@@ -31,6 +40,7 @@ import {
   TURN_DECISION_META_BYPASS,
   TURN_DECISION_META_FORCE_STEER,
   TURN_DECISION_META_TOKEN,
+  TURN_RUNNING_QUOTE_CALLBACK,
   TURN_RUNNING_STOP_CALLBACK,
   buildTurnDecisionCallbackData,
 } from "./turn-decision.js";
@@ -51,7 +61,11 @@ const TELEGRAM_SESSION_PICK_TTL_MS = 30 * 60 * 1000;
 const TELEGRAM_SESSION_PICK_MAX_ITEMS = 20;
 const TELEGRAM_PROJECT_PICK_TTL_MS = 30 * 60 * 1000;
 const TELEGRAM_PROJECT_PICK_PAGE_SIZE = 8;
+const TELEGRAM_RENAME_PICK_TTL_MS = 30 * 60 * 1000;
+const TELEGRAM_RENAME_PICK_MAX_ITEMS = 20;
+const TELEGRAM_PENDING_INPUT_TTL_MS = 30 * 60 * 1000;
 const RUNNING_ANIMATION_INTERVAL_MS = 500;
+const SESSION_BRANCH_DELIMITER = "::";
 const RUNNING_ANIMATION_FRAMES = [
   "🌑",
   "🌒",
@@ -89,6 +103,42 @@ function clipTextFromTop(text: string, maxChars: number): string {
 
 function compactWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function splitNonEmptyLines(text: string): string[] {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function mergePickerSupplementalText(
+  baseText: string,
+  supplementalText: string | undefined,
+): string {
+  const baseLines = splitNonEmptyLines(baseText);
+  if (!supplementalText?.trim()) {
+    return baseLines.join("\n");
+  }
+
+  const merged = [...baseLines];
+  const normalized = baseLines.map((line) => line.toLowerCase());
+  for (const line of splitNonEmptyLines(supplementalText)) {
+    const lineNormalized = line.toLowerCase();
+    const duplicated = normalized.some(
+      (existing) =>
+        existing === lineNormalized ||
+        existing.includes(lineNormalized) ||
+        lineNormalized.includes(existing),
+    );
+    if (duplicated) {
+      continue;
+    }
+    merged.push(line);
+    normalized.push(lineNormalized);
+  }
+  return merged.join("\n");
 }
 
 function redactValue(value: string | undefined): string | undefined {
@@ -200,11 +250,76 @@ function isProjectCommandText(input: string): boolean {
   return commandNameFromText(input) === "project";
 }
 
+function isRenameCommandText(input: string): boolean {
+  return commandNameFromText(input) === "rename";
+}
+
+function isRunningCommandText(input: string): boolean {
+  return commandNameFromText(input) === "running";
+}
+
+function isSandboxCommandText(input: string): boolean {
+  const name = commandNameFromText(input);
+  return name === "sandbox" || name === "isolation";
+}
+
+function isModelCommandText(input: string): boolean {
+  return commandNameFromText(input) === "model";
+}
+
+function isDepthCommandText(input: string): boolean {
+  const name = commandNameFromText(input);
+  return name === "depth" || name === "thinking";
+}
+
+type TelegramPickerCommand =
+  | "sessions"
+  | "project"
+  | "rename"
+  | "sandbox"
+  | "model"
+  | "depth";
+
+function resolveTelegramPickerCommand(
+  input: string,
+): TelegramPickerCommand | undefined {
+  if (isSessionsCommandText(input)) {
+    return "sessions";
+  }
+  if (isProjectCommandText(input)) {
+    return "project";
+  }
+  if (isRenameCommandText(input)) {
+    return "rename";
+  }
+  if (isSandboxCommandText(input)) {
+    return "sandbox";
+  }
+  if (isModelCommandText(input)) {
+    return "model";
+  }
+  if (isDepthCommandText(input)) {
+    return "depth";
+  }
+  return undefined;
+}
+
 function readTelegramProjectPickToken(metadata: unknown): string | undefined {
   if (!isRecord(metadata)) {
     return undefined;
   }
   const token = metadata[TELEGRAM_PROJECT_PICK_META_TOKEN];
+  if (typeof token !== "string" || !token.trim()) {
+    return undefined;
+  }
+  return token.trim();
+}
+
+function readTelegramRenamePickToken(metadata: unknown): string | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const token = metadata[TELEGRAM_RENAME_PICK_META_TOKEN];
   if (typeof token !== "string" || !token.trim()) {
     return undefined;
   }
@@ -270,8 +385,40 @@ function clipSessionDisplayName(name: string, maxChars = 28): string {
   return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
 }
 
+function normalizeManualSessionName(value: string, maxChars = 80): string | undefined {
+  const normalized = compactWhitespace(value);
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function normalizeProjectDirectoryName(value: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "." || normalized === "..") {
+    return undefined;
+  }
+  if (/[/\\\u0000]/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
 function resolveSessionProjectKey(sessionId: string): string {
   return parseChannelSessionId(sessionId)?.projectKey ?? DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
+}
+
+function matchesConversationSessionKey(candidate: string, conversationKey: string): boolean {
+  return (
+    candidate === conversationKey ||
+    candidate.startsWith(`${conversationKey}${SESSION_BRANCH_DELIMITER}`)
+  );
 }
 
 function cloneMetadata(metadata: unknown): Record<string, unknown> {
@@ -340,6 +487,16 @@ type PendingTelegramSessionPick = {
   createdAt: number;
 };
 
+type PendingTelegramRenamePick = {
+  token: string;
+  sessionId: string;
+  sessionName: string;
+  channelId: ChannelId;
+  chatId: string;
+  threadId?: string;
+  createdAt: number;
+};
+
 type ProjectOption = {
   key: string;
   name: string;
@@ -352,10 +509,22 @@ type PendingTelegramProjectPick = {
   chatId: string;
   threadId?: string;
   createdAt: number;
-  action: "select" | "page";
+  action: "select" | "page" | "create";
   projectKey?: string;
   page?: number;
 };
+
+type PendingTelegramConversationInput =
+  | {
+      kind: "rename-session";
+      createdAt: number;
+      sessionId: string;
+      previousName: string;
+    }
+  | {
+      kind: "create-project";
+      createdAt: number;
+    };
 
 class ChannelTurnRelay {
   private progressMessageId: string | undefined;
@@ -374,6 +543,7 @@ class ChannelTurnRelay {
   constructor(
     private readonly adapter: ChannelAdapter,
     private readonly inbound: ChannelInboundMessage,
+    private readonly sessionId: string,
     private readonly options: TurnRelayOptions = {},
   ) {
     this.animationEnabled = !looksLikeSlashCommand(inbound.text);
@@ -409,9 +579,9 @@ class ChannelTurnRelay {
   }
 
   async finalize(result: ChatTurnResult): Promise<void> {
-    this.stopProgressAnimation();
     this.closed = true;
-    await this.flushDeltaPreview(true);
+    this.deltaBuffer = "";
+    this.stopProgressAnimation(true);
 
     const maxChars = Math.max(300, this.adapter.capabilities.maxMessageChars);
     const fullText =
@@ -457,7 +627,16 @@ class ChannelTurnRelay {
 
   dispose(): void {
     this.closed = true;
-    this.stopProgressAnimation();
+    this.deltaBuffer = "";
+    this.stopProgressAnimation(true);
+  }
+
+  belongsToSession(sessionId: string): boolean {
+    return this.sessionId === sessionId;
+  }
+
+  getRunningProgressMessageId(): string | undefined {
+    return this.progressMessageId;
   }
 
   private enqueueProgressWork(work: () => Promise<void>): void {
@@ -561,6 +740,10 @@ class ChannelTurnRelay {
   }
 
   private async flushDeltaPreview(force: boolean): Promise<void> {
+    if (this.closed) {
+      this.deltaBuffer = "";
+      return;
+    }
     if (!this.deltaBuffer) {
       return;
     }
@@ -580,6 +763,9 @@ class ChannelTurnRelay {
   }
 
   private async sendProgress(text: string): Promise<void> {
+    if (this.closed) {
+      return;
+    }
     const normalized = clipText(compactWhitespace(text), 400);
     if (!normalized) {
       return;
@@ -596,6 +782,9 @@ class ChannelTurnRelay {
     ) {
       try {
         await this.editProgressMessage(rendered);
+        if (this.closed) {
+          return;
+        }
         this.startProgressAnimation();
         return;
       } catch {
@@ -610,6 +799,9 @@ class ChannelTurnRelay {
       this.runningControlMetadata(),
       "progress.send",
     );
+    if (this.closed) {
+      return;
+    }
     this.lastRenderedProgress = rendered;
     if (this.adapter.capabilities.supportsMessageEdit && sent.messageId) {
       this.progressMessageId = sent.messageId;
@@ -626,6 +818,9 @@ class ChannelTurnRelay {
   }
 
   private startProgressAnimation(): void {
+    if (this.closed) {
+      return;
+    }
     if (!this.animationEnabled) {
       return;
     }
@@ -647,16 +842,30 @@ class ChannelTurnRelay {
     }, RUNNING_ANIMATION_INTERVAL_MS);
   }
 
-  private stopProgressAnimation(): void {
+  private stopProgressAnimation(resetState = false): void {
     if (!this.animationTimer) {
+      if (resetState) {
+        this.progressMessageId = undefined;
+        this.lastProgressText = "";
+        this.lastRenderedProgress = "";
+      }
       return;
     }
     clearInterval(this.animationTimer);
     this.animationTimer = undefined;
     this.animationEditing = false;
+    if (resetState) {
+      this.progressMessageId = undefined;
+      this.lastProgressText = "";
+      this.lastRenderedProgress = "";
+    }
   }
 
   private async tickProgressAnimation(): Promise<void> {
+    if (this.closed) {
+      this.stopProgressAnimation(true);
+      return;
+    }
     if (
       !this.lastProgressText ||
       !this.progressMessageId ||
@@ -683,7 +892,7 @@ class ChannelTurnRelay {
   }
 
   private async editProgressMessage(text: string): Promise<void> {
-    if (!this.progressMessageId || !this.adapter.editMessage) {
+    if (this.closed || !this.progressMessageId || !this.adapter.editMessage) {
       return;
     }
     if (text === this.lastRenderedProgress) {
@@ -735,6 +944,10 @@ class ChannelTurnRelay {
             {
               text: "🛑 Stop",
               callback_data: TURN_RUNNING_STOP_CALLBACK,
+            },
+            {
+              text: "📌 Quote",
+              callback_data: TURN_RUNNING_QUOTE_CALLBACK,
             },
           ],
         ],
@@ -817,11 +1030,23 @@ export class ChannelGateway {
     string,
     PendingTelegramSessionPick
   >();
+  private readonly pendingTelegramRenamePicks = new Map<
+    string,
+    PendingTelegramRenamePick
+  >();
   private readonly pendingTelegramProjectPicks = new Map<
     string,
     PendingTelegramProjectPick
   >();
+  private readonly pendingTelegramConversationInputs = new Map<
+    string,
+    PendingTelegramConversationInput
+  >();
   private readonly activeProjectsByConversation = new Map<string, string>();
+  private readonly activeSessionsByConversation = new Map<string, string>();
+  private readonly activeRelays = new Set<ChannelTurnRelay>();
+  private readonly activeSessionIds = new Set<string>();
+  private stopping = false;
   private readonly projectRootDir: string | undefined;
 
   constructor(deps: ChannelGatewayDeps) {
@@ -839,6 +1064,7 @@ export class ChannelGateway {
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     const handler: ChannelInboundHandler = async (message) => {
       await this.handleInbound(message);
     };
@@ -851,6 +1077,13 @@ export class ChannelGateway {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    for (const sessionId of this.activeSessionIds) {
+      this.orchestrator.cancelRunningTurn(sessionId, "gateway stopping");
+    }
+    for (const relay of this.activeRelays) {
+      relay.dispose();
+    }
     for (const channel of this.registry.list()) {
       if (channel.stop) {
         await channel.stop();
@@ -862,9 +1095,14 @@ export class ChannelGateway {
     const channel = this.registry.require(message.channelId);
     const conversationKey = buildChannelConversationKey(message);
     const activeProjectKey = this.resolveActiveProjectKey(conversationKey, message);
-    const defaultSessionId = buildChannelSessionId(message, {
+    const fallbackSessionId = buildChannelSessionId(message, {
       projectKey: activeProjectKey,
     });
+    const defaultSessionId = this.resolveActiveSessionId(
+      conversationKey,
+      message,
+      activeProjectKey,
+    );
     const agentId = this.resolveAgentId(message.channelId);
     logGatewayDebug("gateway.inbound.received", {
       channelId: message.channelId,
@@ -875,6 +1113,7 @@ export class ChannelGateway {
       textChars: message.text.length,
       isCommand: looksLikeSlashCommand(message.text),
       defaultSessionId,
+      fallbackSessionId,
       agentId,
     });
     const projectPickToken = readTelegramProjectPickToken(message.metadata);
@@ -886,6 +1125,17 @@ export class ChannelGateway {
         agentId,
         conversationKey,
         token: projectPickToken,
+      });
+    }
+    const renamePickToken = readTelegramRenamePickToken(message.metadata);
+    if (renamePickToken) {
+      return await this.handleTelegramRenamePickSelection({
+        channel,
+        message,
+        sessionId: defaultSessionId,
+        agentId,
+        conversationKey,
+        token: renamePickToken,
       });
     }
     const pickToken = readTelegramSessionPickToken(message.metadata);
@@ -900,8 +1150,17 @@ export class ChannelGateway {
     }
 
     const sessionId = readTelegramSessionPickSessionId(message.metadata) ?? defaultSessionId;
+    if (this.stopping) {
+      logGatewayDebug("gateway.inbound.ignored_stopping", {
+        channelId: message.channelId,
+        chatId: redactValue(message.chatId),
+        sessionId,
+      });
+      return this.emptyTurnResult(agentId, sessionId);
+    }
     const sessionProjectKey = resolveSessionProjectKey(sessionId);
     this.activeProjectsByConversation.set(conversationKey, sessionProjectKey);
+    this.activeSessionsByConversation.set(conversationKey, sessionId);
     const selectedSessionName = readTelegramSessionPickSessionName(message.metadata);
     const turnDecision = readTurnDecisionSelection(message.metadata);
     if (turnDecision) {
@@ -913,6 +1172,18 @@ export class ChannelGateway {
         selection: turnDecision,
       });
     }
+    if (channel.id === "telegram") {
+      const pendingInputResult = await this.handleTelegramPendingConversationInput({
+        channel,
+        message,
+        conversationKey,
+        sessionId,
+        agentId,
+      });
+      if (pendingInputResult) {
+        return pendingInputResult;
+      }
+    }
 
     if (
       this.pendingTurnDecisions.has(sessionId) &&
@@ -923,6 +1194,18 @@ export class ChannelGateway {
 
     const bypassTurnDecision = shouldBypassTurnDecision(message.metadata);
     const isCommandMessage = looksLikeSlashCommand(message.text);
+    if (channel.id === "telegram" && isRunningCommandText(message.text)) {
+      const runningProgressMessageId = this.findRunningProgressMessageId(sessionId);
+      if (runningProgressMessageId) {
+        await this.sendAuxiliaryMessage(
+          channel,
+          message,
+          "已定位当前 running 消息。",
+          runningProgressMessageId,
+        );
+        return this.emptyTurnResult(agentId, sessionId);
+      }
+    }
     if (
       !isCommandMessage &&
       this.orchestrator.isTurnRunning(sessionId) &&
@@ -932,7 +1215,9 @@ export class ChannelGateway {
       return this.emptyTurnResult(agentId, sessionId);
     }
 
-    const relay = new ChannelTurnRelay(channel, message);
+    const relay = new ChannelTurnRelay(channel, message, sessionId);
+    this.activeRelays.add(relay);
+    this.activeSessionIds.add(sessionId);
     const steerTriggered =
       !isCommandMessage &&
       shouldForceSteer(message.metadata) &&
@@ -951,6 +1236,7 @@ export class ChannelGateway {
       delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID];
       delete normalizedMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME];
       delete normalizedMetadata[TELEGRAM_PROJECT_PICK_META_TOKEN];
+      delete normalizedMetadata[TELEGRAM_RENAME_PICK_META_TOKEN];
 
       const result = await this.orchestrator.chat({
         agentId,
@@ -986,23 +1272,67 @@ export class ChannelGateway {
             selectedSessionName,
           )
         : result;
+      const effectiveSessionId = decorated.sessionId || sessionId;
+      if (effectiveSessionId !== sessionId) {
+        this.activeSessionsByConversation.set(conversationKey, effectiveSessionId);
+        this.activeProjectsByConversation.set(
+          conversationKey,
+          resolveSessionProjectKey(effectiveSessionId),
+        );
+      }
       logGatewayDebug("gateway.turn.completed", {
         channelId: message.channelId,
         chatId: redactValue(message.chatId),
-        sessionId,
+        sessionId: effectiveSessionId,
         agentId,
         finalTextChars: decorated.finalText.length,
       });
-      await relay.finalize(decorated);
-      if (channel.id === "telegram" && isSessionsCommandText(message.text)) {
-        await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
+      const telegramPickerCommand =
+        channel.id === "telegram"
+          ? resolveTelegramPickerCommand(message.text)
+          : undefined;
+      if (telegramPickerCommand) {
+        relay.dispose();
+      } else {
+        await relay.finalize(decorated);
       }
-      if (channel.id === "telegram" && isProjectCommandText(message.text)) {
+      if (telegramPickerCommand === "sessions") {
+        await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
+      } else if (telegramPickerCommand === "project") {
         await this.sendTelegramProjectPicker(
           channel,
           message,
           sessionProjectKey,
           0,
+          decorated.finalText,
+        );
+      } else if (telegramPickerCommand === "rename") {
+        await this.sendTelegramRenamePicker(
+          channel,
+          message,
+          sessionProjectKey,
+          decorated.finalText,
+        );
+      } else if (telegramPickerCommand === "sandbox") {
+        await this.sendTelegramSandboxPicker(
+          channel,
+          message,
+          effectiveSessionId,
+          decorated.finalText,
+        );
+      } else if (telegramPickerCommand === "model") {
+        await this.sendTelegramModelPicker(
+          channel,
+          message,
+          effectiveSessionId,
+          decorated.finalText,
+        );
+      } else if (telegramPickerCommand === "depth") {
+        await this.sendTelegramDepthPicker(
+          channel,
+          message,
+          effectiveSessionId,
+          decorated.finalText,
         );
       }
       return decorated;
@@ -1043,6 +1373,8 @@ export class ChannelGateway {
       throw error;
     } finally {
       relay.dispose();
+      this.activeRelays.delete(relay);
+      this.activeSessionIds.delete(sessionId);
     }
   }
 
@@ -1151,6 +1483,235 @@ export class ChannelGateway {
     return await this.handleInbound(replay);
   }
 
+  private async handleTelegramRenamePickSelection(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    conversationKey: string;
+    token: string;
+  }): Promise<ChatTurnResult> {
+    this.pruneTelegramRenamePickEntries();
+    const pending = this.pendingTelegramRenamePicks.get(params.token);
+    if (!pending) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个重命名选项已过期，请重新执行 /rename。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+    const sameThread =
+      (pending.threadId ?? "").trim() === (params.message.threadId ?? "").trim();
+    if (
+      pending.channelId !== params.message.channelId ||
+      pending.chatId !== params.message.chatId ||
+      !sameThread
+    ) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "这个重命名选项不属于当前对话，请重新执行 /rename。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.pendingTelegramRenamePicks.delete(params.token);
+    this.pendingTelegramConversationInputs.set(params.conversationKey, {
+      kind: "rename-session",
+      createdAt: Date.now(),
+      sessionId: pending.sessionId,
+      previousName: pending.sessionName,
+    });
+    await this.sendAuxiliaryMessage(
+      params.channel,
+      params.message,
+      [
+        `已选择会话：${clipSessionDisplayName(pending.sessionName, 48)}`,
+        "请直接发送新的 session 名称。",
+        "发送 /cancel 可取消。",
+      ].join("\n"),
+    );
+    return this.emptyTurnResult(params.agentId, params.sessionId);
+  }
+
+  private async handleTelegramPendingConversationInput(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    conversationKey: string;
+    sessionId: string;
+    agentId: AgentId;
+  }): Promise<ChatTurnResult | null> {
+    this.pruneTelegramConversationInputEntries();
+    const pending = this.pendingTelegramConversationInputs.get(params.conversationKey);
+    if (!pending) {
+      return null;
+    }
+
+    if (looksLikeSlashCommand(params.message.text)) {
+      if (commandNameFromText(params.message.text) === "cancel") {
+        this.pendingTelegramConversationInputs.delete(params.conversationKey);
+        await this.sendAuxiliaryMessage(
+          params.channel,
+          params.message,
+          "已取消当前输入操作。",
+        );
+        return this.emptyTurnResult(params.agentId, params.sessionId);
+      }
+      return null;
+    }
+
+    const rawInput = params.message.text.trim();
+    if (!rawInput) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        pending.kind === "rename-session"
+          ? "名称不能为空，请重新发送新的 session 名称。"
+          : "project 名称不能为空，请重新发送。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    if (pending.kind === "rename-session") {
+      return await this.applyTelegramSessionRename({
+        channel: params.channel,
+        message: params.message,
+        sessionId: params.sessionId,
+        agentId: params.agentId,
+        conversationKey: params.conversationKey,
+        pending,
+        requestedName: rawInput,
+      });
+    }
+    return await this.applyTelegramProjectCreation({
+      channel: params.channel,
+      message: params.message,
+      sessionId: params.sessionId,
+      agentId: params.agentId,
+      conversationKey: params.conversationKey,
+      requestedName: rawInput,
+    });
+  }
+
+  private async applyTelegramSessionRename(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    conversationKey: string;
+    pending: Extract<PendingTelegramConversationInput, { kind: "rename-session" }>;
+    requestedName: string;
+  }): Promise<ChatTurnResult> {
+    const normalizedName = normalizeManualSessionName(params.requestedName);
+    if (!normalizedName) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "名称无效，请重新发送新的 session 名称。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    const targetSession = this.orchestrator.sessions.snapshot(params.pending.sessionId);
+    if (!targetSession) {
+      this.pendingTelegramConversationInputs.delete(params.conversationKey);
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "目标 session 不存在，请重新执行 /rename。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.orchestrator.sessions.setMetadata(targetSession.id, targetSession.agentId, {
+      session_name: normalizedName,
+      session_name_source: "manual",
+    });
+    this.pendingTelegramConversationInputs.delete(params.conversationKey);
+    await this.sendAuxiliaryMessage(
+      params.channel,
+      params.message,
+      [
+        "session 已重命名。",
+        `- from: ${clipSessionDisplayName(params.pending.previousName, 48)}`,
+        `- to: ${clipSessionDisplayName(normalizedName, 48)}`,
+      ].join("\n"),
+    );
+    return this.emptyTurnResult(params.agentId, params.sessionId);
+  }
+
+  private async applyTelegramProjectCreation(params: {
+    channel: ChannelAdapter;
+    message: ChannelInboundMessage;
+    sessionId: string;
+    agentId: AgentId;
+    conversationKey: string;
+    requestedName: string;
+  }): Promise<ChatTurnResult> {
+    if (!this.projectRootDir) {
+      this.pendingTelegramConversationInputs.delete(params.conversationKey);
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "未配置 project root，请先执行 `opencarapace config tui` 设置 runtime.project_root_dir。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    const projectName = normalizeProjectDirectoryName(params.requestedName);
+    if (!projectName) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "project 名称无效，不能包含 / 或 \\，且不能是 . 或 ..。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    const nextPath = path.resolve(this.projectRootDir, projectName);
+    const rootPrefix = `${path.resolve(this.projectRootDir)}${path.sep}`;
+    if (nextPath !== path.resolve(this.projectRootDir) && !nextPath.startsWith(rootPrefix)) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "project 名称无效，请更换名称后重试。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    if (fs.existsSync(nextPath)) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        `project 已存在：${projectName}，请换一个名称。`,
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    try {
+      fs.mkdirSync(nextPath, { recursive: false });
+    } catch (error) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        `新建 project 失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+
+    this.pendingTelegramConversationInputs.delete(params.conversationKey);
+    const nextProjectKey = normalizeChannelSessionProjectKey(projectName);
+    this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
+    this.activeSessionsByConversation.delete(params.conversationKey);
+    await this.sendAuxiliaryMessage(
+      params.channel,
+      params.message,
+      `已新建并切换 project：${projectName}\n后续新对话将绑定到该 project。`,
+    );
+    return this.emptyTurnResult(params.agentId, params.sessionId);
+  }
+
   private async handleTelegramProjectPickSelection(params: {
     channel: ChannelAdapter;
     message: ChannelInboundMessage;
@@ -1198,6 +1759,21 @@ export class ChannelGateway {
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
+    if (pending.action === "create") {
+      this.pendingTelegramConversationInputs.set(params.conversationKey, {
+        kind: "create-project",
+        createdAt: Date.now(),
+      });
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        [
+          "请直接发送新 project 名称。",
+          "发送 /cancel 可取消。",
+        ].join("\n"),
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
 
     const nextProjectKey = pending.projectKey?.trim();
     if (!nextProjectKey) {
@@ -1208,7 +1784,9 @@ export class ChannelGateway {
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
+    this.pendingTelegramConversationInputs.delete(params.conversationKey);
     this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
+    this.activeSessionsByConversation.delete(params.conversationKey);
     const projectName = decodeChannelSessionProjectKey(nextProjectKey);
     await this.sendAuxiliaryMessage(
       params.channel,
@@ -1273,6 +1851,7 @@ export class ChannelGateway {
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
     text: string,
+    replyToMessageId?: string,
   ): Promise<void> {
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -1285,10 +1864,24 @@ export class ChannelGateway {
     if (inbound.threadId) {
       outbound.threadId = inbound.threadId;
     }
-    if (inbound.messageId) {
-      outbound.replyToMessageId = inbound.messageId;
+    const replyTo = replyToMessageId?.trim() || inbound.messageId;
+    if (replyTo) {
+      outbound.replyToMessageId = replyTo;
     }
     await channel.sendMessage(outbound);
+  }
+
+  private findRunningProgressMessageId(sessionId: string): string | undefined {
+    for (const relay of this.activeRelays) {
+      if (!relay.belongsToSession(sessionId)) {
+        continue;
+      }
+      const messageId = relay.getRunningProgressMessageId();
+      if (messageId) {
+        return messageId;
+      }
+    }
+    return undefined;
   }
 
   private decorateSelectedSessionHistory(
@@ -1377,11 +1970,291 @@ export class ChannelGateway {
     await channel.sendMessage(outbound);
   }
 
+  private async sendTelegramRenamePicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    projectKey: string,
+    supplementalText?: string,
+  ): Promise<void> {
+    const sessions = this.listSessionsByProject(projectKey).slice(
+      0,
+      TELEGRAM_RENAME_PICK_MAX_ITEMS,
+    );
+    if (sessions.length === 0) {
+      await this.sendAuxiliaryMessage(
+        channel,
+        inbound,
+        "当前 project 暂无可重命名会话，请先发送消息创建会话。",
+      );
+      return;
+    }
+    this.pruneTelegramRenamePickEntries();
+
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    for (const [index, session] of sessions.entries()) {
+      const token = randomUUID();
+      const sessionName = resolveSessionDisplayName(session);
+      const pending = {
+        token,
+        sessionId: session.id,
+        sessionName,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramRenamePick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramRenamePicks.set(token, pending);
+      const callbackData = buildTelegramRenamePickCallbackData(token);
+      if (!callbackData) {
+        continue;
+      }
+      rows.push([
+        {
+          text: `${index + 1}. ${clipSessionDisplayName(sessionName)}`,
+          callback_data: callbackData,
+        },
+      ]);
+    }
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const baseText = [
+      `当前 project：${decodeChannelSessionProjectKey(projectKey)}`,
+      "点击会话后发送新名称：",
+    ].join("\n");
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: mergePickerSupplementalText(baseText, supplementalText),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: rows,
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramSandboxPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+    supplementalText?: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawMode =
+      typeof metadata.sandbox_mode === "string" ? metadata.sandbox_mode.trim() : "";
+    const currentMode = rawMode || "(default)";
+    const isCurrent = (
+      mode: "read-only" | "workspace-write" | "danger-full-access" | "clear",
+    ): boolean => {
+      if (mode === "clear") {
+        return !rawMode;
+      }
+      return rawMode === mode;
+    };
+
+    const baseText = [
+      "Sandbox mode (workspace)",
+      `- current: ${currentMode}`,
+      "点击按钮直接切换：",
+    ].join("\n");
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: mergePickerSupplementalText(baseText, supplementalText),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("read-only") ? "✅ " : ""}read-only`,
+                callback_data: buildTelegramSandboxCallbackData("read-only"),
+              },
+              {
+                text: `${isCurrent("workspace-write") ? "✅ " : ""}workspace-write`,
+                callback_data: buildTelegramSandboxCallbackData("workspace-write"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("danger-full-access") ? "✅ " : ""}danger-full-access`,
+                callback_data: buildTelegramSandboxCallbackData("danger-full-access"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramSandboxCallbackData("clear"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramModelPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+    supplementalText?: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawModel =
+      typeof metadata.model === "string" ? metadata.model.trim() : "";
+    const currentModel = rawModel || "(default)";
+    const isCurrent = (model: "gpt-5" | "gpt-5.1" | "clear"): boolean => {
+      if (model === "clear") {
+        return !rawModel;
+      }
+      return rawModel === model;
+    };
+
+    const baseText = [
+      "Model preference (global)",
+      `- current: ${currentModel}`,
+      "点击按钮设置模型：",
+    ].join("\n");
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: mergePickerSupplementalText(baseText, supplementalText),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("gpt-5") ? "✅ " : ""}gpt-5`,
+                callback_data: buildTelegramModelCallbackData("gpt-5"),
+              },
+              {
+                text: `${isCurrent("gpt-5.1") ? "✅ " : ""}gpt-5.1`,
+                callback_data: buildTelegramModelCallbackData("gpt-5.1"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramModelCallbackData("clear"),
+              },
+              {
+                text: "custom...",
+                callback_data: buildTelegramModelCallbackData("custom"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramDepthPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+    supplementalText?: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawDepth =
+      typeof metadata.thinking_depth === "string"
+        ? metadata.thinking_depth.trim()
+        : "";
+    const currentDepth = rawDepth || "(default)";
+    const isCurrent = (depth: "low" | "medium" | "high" | "clear"): boolean => {
+      if (depth === "clear") {
+        return !rawDepth;
+      }
+      return rawDepth === depth;
+    };
+
+    const baseText = [
+      "Thinking depth preference (global)",
+      `- current: ${currentDepth}`,
+      "点击按钮设置深度：",
+    ].join("\n");
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: mergePickerSupplementalText(baseText, supplementalText),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("low") ? "✅ " : ""}low`,
+                callback_data: buildTelegramDepthCallbackData("low"),
+              },
+              {
+                text: `${isCurrent("medium") ? "✅ " : ""}medium`,
+                callback_data: buildTelegramDepthCallbackData("medium"),
+              },
+              {
+                text: `${isCurrent("high") ? "✅ " : ""}high`,
+                callback_data: buildTelegramDepthCallbackData("high"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramDepthCallbackData("clear"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
   private async sendTelegramProjectPicker(
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
     currentProjectKey: string,
     page: number,
+    supplementalText?: string,
   ): Promise<void> {
     if (!this.projectRootDir) {
       await this.sendAuxiliaryMessage(
@@ -1392,20 +2265,18 @@ export class ChannelGateway {
       return;
     }
     const projects = this.listProjectsFromRoot();
-    if (projects.length === 0) {
-      await this.sendAuxiliaryMessage(
-        channel,
-        inbound,
-        `project root 下没有可选子目录：${this.projectRootDir}`,
-      );
-      return;
-    }
     this.pruneTelegramProjectPickEntries();
 
     const totalPages = Math.max(1, Math.ceil(projects.length / TELEGRAM_PROJECT_PICK_PAGE_SIZE));
-    const safePage = Math.min(totalPages - 1, Math.max(0, Math.floor(page)));
+    const safePage =
+      projects.length === 0
+        ? 0
+        : Math.min(totalPages - 1, Math.max(0, Math.floor(page)));
     const start = safePage * TELEGRAM_PROJECT_PICK_PAGE_SIZE;
-    const items = projects.slice(start, start + TELEGRAM_PROJECT_PICK_PAGE_SIZE);
+    const items =
+      projects.length === 0
+        ? []
+        : projects.slice(start, start + TELEGRAM_PROJECT_PICK_PAGE_SIZE);
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
     for (const project of items) {
       const token = randomUUID();
@@ -1435,7 +2306,7 @@ export class ChannelGateway {
     }
 
     const navRow: Array<{ text: string; callback_data: string }> = [];
-    if (safePage > 0) {
+    if (projects.length > 0 && safePage > 0) {
       const token = randomUUID();
       const pending = {
         token,
@@ -1457,7 +2328,7 @@ export class ChannelGateway {
         });
       }
     }
-    if (safePage + 1 < totalPages) {
+    if (projects.length > 0 && safePage + 1 < totalPages) {
       const token = randomUUID();
       const pending = {
         token,
@@ -1483,20 +2354,51 @@ export class ChannelGateway {
       rows.push(navRow);
     }
 
+    const createToken = randomUUID();
+    const createPending = {
+      token: createToken,
+      action: "create",
+      channelId: inbound.channelId,
+      chatId: inbound.chatId,
+      createdAt: Date.now(),
+    } as PendingTelegramProjectPick;
+    if (inbound.threadId !== undefined) {
+      createPending.threadId = inbound.threadId;
+    }
+    this.pendingTelegramProjectPicks.set(createToken, createPending);
+    const createCallback = buildTelegramProjectPickCallbackData(createToken);
+    if (createCallback) {
+      rows.push([
+        {
+          text: "➕ 新建 project",
+          callback_data: createCallback,
+        },
+      ]);
+    }
+
     if (rows.length === 0) {
       return;
     }
 
     const end = Math.min(projects.length, start + items.length);
+    const projectsLine =
+      projects.length > 0
+        ? `Projects ${start + 1}-${end}/${projects.length}（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`
+        : `Projects 0/0（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`;
+    const actionLine =
+      projects.length > 0
+        ? "点击项目可切换，列表按最近使用时间排序；底部按钮可新建项目。"
+        : "当前还没有可选项目，点击底部按钮新建。";
+    const baseText = [
+      `Project root：${this.projectRootDir}`,
+      `当前 project：${decodeChannelSessionProjectKey(currentProjectKey)}`,
+      projectsLine,
+      actionLine,
+    ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
       chatId: inbound.chatId,
-      text: [
-        `Project root：${this.projectRootDir}`,
-        `当前 project：${decodeChannelSessionProjectKey(currentProjectKey)}`,
-        `Projects ${start + 1}-${end}/${projects.length}（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`,
-        "点击项目可切换，列表按最近使用时间排序。",
-      ].join("\n"),
+      text: mergePickerSupplementalText(baseText, supplementalText),
       metadata: {
         telegram_reply_markup: {
           inline_keyboard: rows,
@@ -1524,6 +2426,24 @@ export class ChannelGateway {
     }
   }
 
+  private pruneTelegramRenamePickEntries(): void {
+    const now = Date.now();
+    for (const [token, entry] of this.pendingTelegramRenamePicks.entries()) {
+      if (now - entry.createdAt > TELEGRAM_RENAME_PICK_TTL_MS) {
+        this.pendingTelegramRenamePicks.delete(token);
+      }
+    }
+  }
+
+  private pruneTelegramConversationInputEntries(): void {
+    const now = Date.now();
+    for (const [conversationKey, entry] of this.pendingTelegramConversationInputs.entries()) {
+      if (now - entry.createdAt > TELEGRAM_PENDING_INPUT_TTL_MS) {
+        this.pendingTelegramConversationInputs.delete(conversationKey);
+      }
+    }
+  }
+
   private pruneTelegramProjectPickEntries(): void {
     const now = Date.now();
     for (const [token, entry] of this.pendingTelegramProjectPicks.entries()) {
@@ -1547,6 +2467,29 @@ export class ChannelGateway {
     return resolved;
   }
 
+  private resolveActiveSessionId(
+    conversationKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+    projectKey: string,
+  ): string {
+    const active = this.activeSessionsByConversation.get(conversationKey);
+    if (active && resolveSessionProjectKey(active) === projectKey) {
+      return active;
+    }
+    const inferred = this.inferLatestSessionForConversation(
+      conversationKey,
+      projectKey,
+      message,
+    );
+    const resolved =
+      inferred ??
+      buildChannelSessionId(message, {
+        projectKey,
+      });
+    this.activeSessionsByConversation.set(conversationKey, resolved);
+    return resolved;
+  }
+
   private inferLatestProjectForConversation(
     conversationKey: string,
     message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
@@ -1555,11 +2498,35 @@ export class ChannelGateway {
     const fallbackProject = resolveSessionProjectKey(fallbackSessionId);
     for (const session of this.orchestrator.sessions.list()) {
       const parsed = parseChannelSessionId(session.id);
-      if (parsed && parsed.conversationKey === conversationKey) {
+      if (parsed && matchesConversationSessionKey(parsed.conversationKey, conversationKey)) {
         return parsed.projectKey;
       }
       if (!parsed && session.id === fallbackSessionId) {
         return fallbackProject;
+      }
+    }
+    return undefined;
+  }
+
+  private inferLatestSessionForConversation(
+    conversationKey: string,
+    projectKey: string,
+    message: Pick<ChannelInboundMessage, "channelId" | "chatId" | "threadId">,
+  ): string | undefined {
+    const fallbackSessionId = buildChannelSessionId(message, {
+      projectKey,
+    });
+    for (const session of this.orchestrator.sessions.list()) {
+      const parsed = parseChannelSessionId(session.id);
+      if (
+        parsed &&
+        parsed.projectKey === projectKey &&
+        matchesConversationSessionKey(parsed.conversationKey, conversationKey)
+      ) {
+        return session.id;
+      }
+      if (!parsed && session.id === fallbackSessionId) {
+        return session.id;
       }
     }
     return undefined;

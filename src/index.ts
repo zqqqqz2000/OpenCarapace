@@ -39,6 +39,7 @@ export * from "./channels/session-key.js";
 export * from "./channels/gateway.js";
 export * from "./channels/telegram.js";
 export * from "./channels/telegram-project-picker.js";
+export * from "./channels/telegram-preferences-picker.js";
 export * from "./channels/bridge.js";
 export * from "./channels/turn-decision.js";
 export * from "./channels/factory.js";

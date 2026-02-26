@@ -3,12 +3,14 @@ export type TurnDecisionAction = "steer" | "stack";
 const TURN_DECISION_CALLBACK_PREFIX = "oc:turn:";
 const TURN_DECISION_TOKEN_RE = /^[a-zA-Z0-9-]{8,80}$/;
 const TURN_RUNNING_STOP_CALLBACK_DATA = "oc:stop";
+const TURN_RUNNING_QUOTE_CALLBACK_DATA = "oc:running-quote";
 
 export const TURN_DECISION_META_ACTION = "__oc_turn_decision_action";
 export const TURN_DECISION_META_TOKEN = "__oc_turn_decision_token";
 export const TURN_DECISION_META_BYPASS = "__oc_turn_decision_bypass";
 export const TURN_DECISION_META_FORCE_STEER = "__oc_turn_decision_force_steer";
 export const TURN_RUNNING_STOP_CALLBACK = TURN_RUNNING_STOP_CALLBACK_DATA;
+export const TURN_RUNNING_QUOTE_CALLBACK = TURN_RUNNING_QUOTE_CALLBACK_DATA;
 
 export function buildTurnDecisionCallbackData(
   token: string,
@@ -46,4 +48,8 @@ export function parseTurnDecisionCallbackData(
 
 export function isTurnRunningStopCallbackData(data: string): boolean {
   return data.trim() === TURN_RUNNING_STOP_CALLBACK_DATA;
+}
+
+export function isTurnRunningQuoteCallbackData(data: string): boolean {
+  return data.trim() === TURN_RUNNING_QUOTE_CALLBACK_DATA;
 }

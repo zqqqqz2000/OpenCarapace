@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentRegistry } from "./agent.js";
 import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
 import {
@@ -28,7 +29,10 @@ export type CommandExecutionResult = {
   handled: boolean;
   finalText?: string;
   agentId?: AgentId;
+  sessionId?: string;
 };
+
+const SESSION_BRANCH_DELIMITER = "::";
 
 function parseNumber(value: string | undefined, fallback: number, min = 1, max = 100): number {
   const n = Number(value ?? "");
@@ -235,6 +239,14 @@ function resolveSessionProjectKey(sessionId: string): string | undefined {
   return parsed.projectKey || DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
 }
 
+function resolveWorkspaceName(sessionId: string): string {
+  const projectKey = resolveSessionProjectKey(sessionId);
+  if (!projectKey) {
+    return "default";
+  }
+  return decodeChannelSessionProjectKey(projectKey);
+}
+
 type ThinkingDepth = "low" | "medium" | "high";
 type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
@@ -276,7 +288,9 @@ function normalizeSandboxMode(value: string | undefined): CodexSandboxMode | und
     raw === "workspace-write" ||
     raw === "workspace_write" ||
     raw === "workspace" ||
+    raw === "rw" ||
     raw === "write" ||
+    raw === "w" ||
     raw === "standard" ||
     raw === "ws"
   ) {
@@ -286,9 +300,11 @@ function normalizeSandboxMode(value: string | undefined): CodexSandboxMode | und
     raw === "danger-full-access" ||
     raw === "danger_full_access" ||
     raw === "danger" ||
+    raw === "dfa" ||
     raw === "full" ||
     raw === "full-access" ||
     raw === "unisolated" ||
+    raw === "unsafe" ||
     raw === "open"
   ) {
     return "danger-full-access";
@@ -363,6 +379,19 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   };
 }
 
+function stripSessionBranchSuffix(sessionId: string): string {
+  const normalized = sessionId.trim();
+  const markerIndex = normalized.indexOf(SESSION_BRANCH_DELIMITER);
+  if (markerIndex <= 0) {
+    return normalized;
+  }
+  return normalized.slice(0, markerIndex);
+}
+
+function buildDerivedSessionId(baseSessionId: string): string {
+  return `${baseSessionId}${SESSION_BRANCH_DELIMITER}${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+}
+
 export type ConversationCommandServiceDeps = {
   registry: AgentRegistry;
   sessions: SessionManager;
@@ -427,30 +456,7 @@ export class ConversationCommandService {
       case "interrupt":
         return this.stopTurnText(params.sessionId, params.currentAgentId);
       case "new":
-      case "reset": {
-        const next = this.deps.sessions.reset(params.sessionId, params.currentAgentId);
-        const memory = this.getMemorySkill();
-        if (memory) {
-          memory.clearSession(params.sessionId);
-        }
-        this.deps.sessions.setMetadata(params.sessionId, next.agentId, {
-          codex_thread_id: "",
-          claude_session_id: "",
-          session_name: "",
-          session_name_source: "",
-        });
-        return {
-          handled: true,
-          finalText: [
-            "Session reset complete.",
-            `- session: ${next.id}`,
-            `- agent: ${next.agentId}`,
-            "- codexThread: cleared",
-            "- claudeConversation: cleared",
-          ].join("\n"),
-          agentId: next.agentId,
-        };
-      }
+        return this.startNewSession(params.sessionId, params.currentAgentId);
       case "history": {
         const limit = parseNumber(args[0], 12, 1, 50);
         return {
@@ -466,10 +472,24 @@ export class ConversationCommandService {
           agentId: params.currentAgentId,
         };
       }
+      case "running": {
+        return {
+          handled: true,
+          finalText: this.runningText(params.sessionId),
+          agentId: params.currentAgentId,
+        };
+      }
       case "project": {
         return {
           handled: true,
           finalText: this.projectText(params.sessionId, args[0]),
+          agentId: params.currentAgentId,
+        };
+      }
+      case "rename": {
+        return {
+          handled: true,
+          finalText: this.renameText(params.sessionId, args[0]),
           agentId: params.currentAgentId,
         };
       }
@@ -538,15 +558,17 @@ export class ConversationCommandService {
       "- /help: show command list",
       "- /status: show current conversation status",
       "- /stop: interrupt current running turn in this session",
-      "- /new or /reset: clear current session messages",
+      "- /new: keep current session and switch to a new empty session",
       "- /history [n]: show last n messages (default 12)",
       "- /sessions: list recent sessions",
+      '- /running: quick quote current session (for locating running turn)',
       "- /project: show current project and open picker in Telegram",
+      "- /rename: pick a session in Telegram then rename it",
       "- /session: show current session details",
       "- /agent [agentId]: show or switch agent (codex/claude-code)",
-      "- /model [name|clear]: show or set model preference for current session",
-      "- /depth [low|medium|high|clear]: show or set thinking depth",
-      "- /sandbox [read-only|workspace-write|danger-full-access|clear]: set codex sandbox mode",
+      "- /model [name|clear]: show or set global model preference",
+      "- /depth [low|medium|high|clear]: show or set global thinking depth",
+      "- /sandbox [read-only|workspace-write|danger-full-access|clear]: set codex sandbox mode for current workspace",
       "- /isolation: alias of /sandbox",
       "- /skills [catalog n]: list active skills or OpenClaw catalog skills",
       "- /tools: list enabled lightweight tools",
@@ -625,6 +647,38 @@ export class ConversationCommandService {
     };
   }
 
+  private startNewSession(currentSessionId: string, currentAgentId: AgentId): CommandExecutionResult {
+    const normalizedCurrentId = currentSessionId.trim();
+    const baseSessionId = stripSessionBranchSuffix(normalizedCurrentId) || normalizedCurrentId;
+
+    let nextSessionId = buildDerivedSessionId(baseSessionId);
+    let attempts = 0;
+    while (this.deps.sessions.snapshot(nextSessionId) && attempts < 5) {
+      nextSessionId = buildDerivedSessionId(baseSessionId);
+      attempts += 1;
+    }
+
+    const next = this.deps.sessions.ensure(nextSessionId, currentAgentId);
+    this.deps.sessions.setMetadata(next.id, next.agentId, {
+      codex_thread_id: "",
+      claude_session_id: "",
+      session_name: "",
+      session_name_source: "",
+    });
+
+    return {
+      handled: true,
+      sessionId: next.id,
+      finalText: [
+        "Started a new session.",
+        `- previous: ${normalizedCurrentId}`,
+        `- session: ${next.id}`,
+        `- agent: ${next.agentId}`,
+      ].join("\n"),
+      agentId: next.agentId,
+    };
+  }
+
   private historyText(sessionId: string, limit: number): string {
     const session = this.deps.sessions.snapshot(sessionId);
     if (!session || session.messages.length === 0) {
@@ -671,6 +725,20 @@ export class ConversationCommandService {
     return [...heading, ...rows].join("\n");
   }
 
+  private runningText(sessionId: string): string {
+    const session = this.deps.sessions.snapshot(sessionId);
+    const displayName = session ? resolveSessionDisplayName(session) : "New Session";
+    const quotedName = clipSessionListName(displayName, 60).replace(/"/g, "“");
+    const running = this.deps.isSessionRunning?.(sessionId) === true;
+    const scopedProjectKey = resolveSessionProjectKey(sessionId);
+    const projectPart = scopedProjectKey
+      ? `, project=${decodeChannelSessionProjectKey(scopedProjectKey)}`
+      : "";
+    return running
+      ? `Running quote: "${quotedName}" (session=${sessionId}${projectPart})`
+      : `No running turn in current session: "${quotedName}" (session=${sessionId}${projectPart})`;
+  }
+
   private projectText(sessionId: string, requestedProjectRaw: string | undefined): string {
     const projectKey = resolveSessionProjectKey(sessionId);
     const current = projectKey ? decodeChannelSessionProjectKey(projectKey) : "(unbound)";
@@ -686,6 +754,24 @@ export class ConversationCommandService {
       "Project selection",
       `- current: ${current}`,
       "Use /project in Telegram to choose another project.",
+    ].join("\n");
+  }
+
+  private renameText(sessionId: string, requestedNameRaw: string | undefined): string {
+    const session = this.deps.sessions.snapshot(sessionId);
+    const current = session ? resolveSessionDisplayName(session) : "New Session";
+    if (requestedNameRaw?.trim()) {
+      return [
+        "Session rename",
+        `- current: ${current}`,
+        `- requested: ${requestedNameRaw.trim()}`,
+        "Use /rename in Telegram, choose a session, then send the new name.",
+      ].join("\n");
+    }
+    return [
+      "Session rename",
+      `- current: ${current}`,
+      "Use /rename in Telegram, choose a session, then send the new name.",
     ].join("\n");
   }
 
@@ -793,7 +879,7 @@ export class ConversationCommandService {
       return {
         handled: true,
         finalText: [
-          "Model preference",
+          "Model preference (global)",
           `- current: ${currentModel}`,
           "Usage: /model <name> | /model clear",
         ].join("\n"),
@@ -811,18 +897,18 @@ export class ConversationCommandService {
     }
 
     if (model.toLowerCase() === "clear" || model.toLowerCase() === "default") {
-      this.deps.sessions.setMetadata(sessionId, currentAgentId, { model: "" });
+      this.deps.sessions.setGlobalMetadata({ model: "" });
       return {
         handled: true,
-        finalText: `Model preference cleared for session ${sessionId}.`,
+        finalText: "Model preference cleared globally.",
         agentId: currentAgentId,
       };
     }
 
-    this.deps.sessions.setMetadata(sessionId, currentAgentId, { model });
+    this.deps.sessions.setGlobalMetadata({ model });
     return {
       handled: true,
-      finalText: `Model preference set.\n- session: ${sessionId}\n- model: ${model}`,
+      finalText: `Model preference set.\n- scope: global\n- model: ${model}`,
       agentId: currentAgentId,
     };
   }
@@ -842,7 +928,7 @@ export class ConversationCommandService {
       return {
         handled: true,
         finalText: [
-          "Thinking depth preference",
+          "Thinking depth preference (global)",
           `- current: ${currentDepth}`,
           "Usage: /depth <low|medium|high> | /depth clear",
         ].join("\n"),
@@ -854,10 +940,10 @@ export class ConversationCommandService {
     if (!normalized) {
       const raw = depthRaw.trim().toLowerCase();
       if (raw === "clear" || raw === "default") {
-        this.deps.sessions.setMetadata(sessionId, currentAgentId, { thinking_depth: "" });
+        this.deps.sessions.setGlobalMetadata({ thinking_depth: "" });
         return {
           handled: true,
-          finalText: `Thinking depth preference cleared for session ${sessionId}.`,
+          finalText: "Thinking depth preference cleared globally.",
           agentId: currentAgentId,
         };
       }
@@ -868,12 +954,12 @@ export class ConversationCommandService {
       };
     }
 
-    this.deps.sessions.setMetadata(sessionId, currentAgentId, {
+    this.deps.sessions.setGlobalMetadata({
       thinking_depth: normalized,
     });
     return {
       handled: true,
-      finalText: `Thinking depth set.\n- session: ${sessionId}\n- depth: ${normalized}`,
+      finalText: `Thinking depth set.\n- scope: global\n- depth: ${normalized}`,
       agentId: currentAgentId,
     };
   }
@@ -893,10 +979,10 @@ export class ConversationCommandService {
       return {
         handled: true,
         finalText: [
-          "Codex sandbox mode",
+          "Codex sandbox mode (workspace)",
           `- current: ${currentMode}`,
           "Usage: /sandbox <read-only|workspace-write|danger-full-access> | /sandbox clear",
-          "Aliases: isolated -> read-only, unisolated -> danger-full-access",
+          "Aliases: ro/isolated -> read-only, ws/rw/workspace -> workspace-write, dfa/unisolated/open -> danger-full-access",
         ].join("\n"),
         agentId: currentAgentId,
       };
@@ -904,10 +990,13 @@ export class ConversationCommandService {
 
     const raw = modeRaw.trim().toLowerCase();
     if (raw === "clear" || raw === "default") {
-      this.deps.sessions.setMetadata(sessionId, currentAgentId, { sandbox_mode: "" });
+      this.deps.sessions.setWorkspaceMetadata(sessionId, { sandbox_mode: "" });
       return {
         handled: true,
-        finalText: `Sandbox mode cleared for session ${sessionId}.`,
+        finalText: [
+          "Sandbox mode cleared.",
+          `- workspace: ${resolveWorkspaceName(sessionId)}`,
+        ].join("\n"),
         agentId: currentAgentId,
       };
     }
@@ -916,19 +1005,20 @@ export class ConversationCommandService {
     if (!normalized) {
       return {
         handled: true,
-        finalText: "Invalid sandbox mode. Use: /sandbox read-only|workspace-write|danger-full-access|clear",
+        finalText:
+          "Invalid sandbox mode. Use: /sandbox read-only|workspace-write|danger-full-access|clear (aliases: ro/ws/dfa, isolated/unisolated/open)",
         agentId: currentAgentId,
       };
     }
 
-    this.deps.sessions.setMetadata(sessionId, currentAgentId, {
+    this.deps.sessions.setWorkspaceMetadata(sessionId, {
       sandbox_mode: normalized,
     });
     return {
       handled: true,
       finalText: [
         "Sandbox mode set.",
-        `- session: ${sessionId}`,
+        `- workspace: ${resolveWorkspaceName(sessionId)}`,
         `- sandbox: ${normalized}`,
         currentAgentId === "codex" ? "" : "- note: this applies when agent is codex.",
       ]

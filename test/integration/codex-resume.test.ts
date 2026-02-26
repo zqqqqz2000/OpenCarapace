@@ -102,7 +102,7 @@ function createOrchestratorWithFakeCodex(
 }
 
 describe("Codex resume-only conversation flow", () => {
-  test("uses exec on first turn, resume on next turns, and /new clears codex thread binding", async () => {
+  test("uses exec on first turn, resume on next turns, and /new switches to a fresh session", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-codex-resume-"));
     const scriptPath = path.join(root, "fake-codex.mjs");
     const callLogPath = path.join(root, "calls.json");
@@ -124,13 +124,16 @@ describe("Codex resume-only conversation flow", () => {
     });
     expect(second.finalText).toContain("thread-1");
 
-    await orchestrator.chat({
+    const created = await orchestrator.chat({
       sessionId: "s-resume",
       input: "/new",
     });
+    expect(created.finalText).toContain("Started a new session.");
+    expect(created.sessionId).not.toBe("s-resume");
+    const nextSessionId = created.sessionId;
 
     const third = await orchestrator.chat({
-      sessionId: "s-resume",
+      sessionId: nextSessionId,
       input: "third",
     });
     expect(third.finalText).toContain("thread-2");
@@ -144,16 +147,22 @@ describe("Codex resume-only conversation flow", () => {
 
     expect(firstCall.includes("exec")).toBeTrue();
     expect(firstCall.includes("resume")).toBeFalse();
+    expect(firstCall.includes("--skip-git-repo-check")).toBeTrue();
 
     expect(secondCall.includes("exec")).toBeTrue();
     expect(secondCall.includes("resume")).toBeTrue();
+    expect(secondCall.includes("--skip-git-repo-check")).toBeTrue();
     const resumeThread = secondCall[secondCall.indexOf("resume") + 1];
     expect(resumeThread).toBe("thread-1");
 
     expect(thirdCall.includes("exec")).toBeTrue();
     expect(thirdCall.includes("resume")).toBeFalse();
+    expect(thirdCall.includes("--skip-git-repo-check")).toBeTrue();
 
-    const metadata = orchestrator.sessions.getMetadata("s-resume");
+    const previousMetadata = orchestrator.sessions.getMetadata("s-resume");
+    expect(previousMetadata.codex_thread_id).toBe("thread-1");
+
+    const metadata = orchestrator.sessions.getMetadata(nextSessionId);
     expect(metadata.codex_thread_id).toBe("thread-2");
     expect(typeof metadata.codex_usage_snapshot).toBe("object");
     if (
