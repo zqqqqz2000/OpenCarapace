@@ -6,6 +6,10 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
   parseTelegramProjectPickCallbackData,
 } from "./telegram-project-picker.js";
+import {
+  TELEGRAM_RENAME_PICK_META_TOKEN,
+  parseTelegramRenamePickCallbackData,
+} from "./telegram-rename-picker.js";
 import { resolveTelegramPreferenceCommandFromCallbackData } from "./telegram-preferences-picker.js";
 import {
   TELEGRAM_SESSION_PICK_META_TOKEN,
@@ -553,6 +557,7 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "sessions", description: "List recent sessions" },
   { command: "running", description: "Quote current session to locate running turn" },
   { command: "project", description: "Select active project" },
+  { command: "rename", description: "Rename a session from inline picker" },
   { command: "agent", description: "Show or switch current agent" },
   { command: "model", description: "Show or set model preference" },
   { command: "depth", description: "Show or set thinking depth" },
@@ -567,7 +572,11 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
 
 function buildDefaultReplyKeyboardMarkup(): Record<string, unknown> {
   return {
-    keyboard: [[{ text: "/new" }, { text: "/sessions" }], [{ text: "/running" }, { text: "/project" }]],
+    keyboard: [
+      [{ text: "/new" }, { text: "/sessions" }],
+      [{ text: "/running" }, { text: "/project" }],
+      [{ text: "/rename" }],
+    ],
     resize_keyboard: true,
     is_persistent: true,
     one_time_keyboard: false,
@@ -1052,6 +1061,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const runningQuoteRequested = isTurnRunningQuoteCallbackData(rawData);
     const sessionPick = parseTelegramSessionPickCallbackData(rawData);
     const projectPick = parseTelegramProjectPickCallbackData(rawData);
+    const renamePick = parseTelegramRenamePickCallbackData(rawData);
     const preferenceCommand = resolveTelegramPreferenceCommandFromCallbackData(rawData);
     if (
       !decision &&
@@ -1059,6 +1069,7 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       !runningQuoteRequested &&
       !sessionPick &&
       !projectPick &&
+      !renamePick &&
       !preferenceCommand
     ) {
       logTelegramDebug("callback_query.ignored_unrecognized_data", {
@@ -1089,9 +1100,11 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           ? "/session-pick"
           : projectPick
             ? "/project-pick"
-            : preferenceCommand
-              ? preferenceCommand.commandText
-              : "/turn-decision",
+            : renamePick
+              ? "/rename-pick"
+              : preferenceCommand
+                ? preferenceCommand.commandText
+                : "/turn-decision",
       raw: callbackQuery,
     };
     if (decision) {
@@ -1110,6 +1123,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       inbound.metadata = {
         ...(inbound.metadata ?? {}),
         [TELEGRAM_PROJECT_PICK_META_TOKEN]: projectPick.token,
+      };
+    }
+    if (renamePick) {
+      inbound.metadata = {
+        ...(inbound.metadata ?? {}),
+        [TELEGRAM_RENAME_PICK_META_TOKEN]: renamePick.token,
       };
     }
 
@@ -1148,7 +1167,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             ? "已选择会话"
             : projectPick
               ? "已选择项目"
-              : (preferenceCommand?.ackText ?? "已选择偏好"),
+              : renamePick
+                ? "已选择会话"
+                : (preferenceCommand?.ackText ?? "已选择偏好"),
     );
     logTelegramDebug("callback_query.dispatch_inbound", {
       callbackId: redactValue(callbackId),

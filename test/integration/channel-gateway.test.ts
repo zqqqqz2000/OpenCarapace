@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -33,6 +33,10 @@ import {
   parseTelegramProjectPickCallbackData,
   TELEGRAM_PROJECT_PICK_META_TOKEN,
 } from "../../src/channels/telegram-project-picker.js";
+import {
+  parseTelegramRenamePickCallbackData,
+  TELEGRAM_RENAME_PICK_META_TOKEN,
+} from "../../src/channels/telegram-rename-picker.js";
 import {
   parseTelegramDepthCallbackData,
   parseTelegramModelCallbackData,
@@ -309,6 +313,36 @@ function findProjectPickCallbackByText(
   throw new Error(`missing project picker callback token for text=${text}`);
 }
 
+function findRenamePickCallbackByText(
+  messages: ChannelOutboundMessage[],
+  text: string,
+): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData || !button.text?.includes(text)) {
+          continue;
+        }
+        const parsed = parseTelegramRenamePickCallbackData(callbackData);
+        if (parsed) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error(`missing rename picker callback token for text=${text}`);
+}
+
 function findLatestMessageContaining(
   messages: ChannelOutboundMessage[],
   text: string,
@@ -353,6 +387,28 @@ function findPreferenceCallbackByText(
     }
   }
   throw new Error(`missing preference callback for text=${text}`);
+}
+
+function listMessagesWithInlineCallback(
+  messages: ChannelOutboundMessage[],
+  matches: (callbackData: string) => boolean,
+): ChannelOutboundMessage[] {
+  return messages.filter((message) => {
+    const metadata = message.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    return rows.some((row) =>
+      row.some((button) => {
+        const callbackData = button.callback_data;
+        return typeof callbackData === "string" && matches(callbackData);
+      }),
+    );
+  });
 }
 
 describe("ChannelGateway", () => {
@@ -959,6 +1015,65 @@ describe("ChannelGateway", () => {
     ).toBeTrue();
   });
 
+  test("renames selected session from /rename picker flow", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-rename-session",
+      messageId: "rs-1",
+      text: "rename target session",
+    });
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-rename-session",
+      messageId: "rs-2",
+      text: "/rename",
+    });
+
+    const renameToken = findRenamePickCallbackByText(adapter.sent, "rename target");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-rename-session",
+      messageId: "rs-3",
+      text: "/rename-pick",
+      metadata: {
+        [TELEGRAM_RENAME_PICK_META_TOKEN]: renameToken,
+      },
+    });
+    expect(
+      adapter.sent.some((message) => message.text.includes("请直接发送新的 session 名称")),
+    ).toBeTrue();
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-rename-session",
+      messageId: "rs-4",
+      text: "重命名后会话",
+    });
+    expect(
+      adapter.sent.some((message) => message.text.includes("session 已重命名")),
+    ).toBeTrue();
+
+    const sessions = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-rename-session",
+      messageId: "rs-5",
+      text: "/sessions",
+    });
+    expect(sessions.finalText).toContain("重命名后会话");
+  });
+
   test("sends sandbox picker after /sandbox command", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();
@@ -979,8 +1094,15 @@ describe("ChannelGateway", () => {
       text: "/sandbox",
     });
 
+    const sandboxPickers = listMessagesWithInlineCallback(adapter.sent, (callbackData) =>
+      Boolean(parseTelegramSandboxCallbackData(callbackData)),
+    );
+    expect(sandboxPickers.length).toBe(1);
     const picker = findLatestMessageContaining(adapter.sent, "Sandbox mode (workspace)");
     expect(picker.text).toContain("点击按钮直接切换");
+    expect(picker.text).toContain(
+      "Usage: /sandbox <read-only|workspace-write|danger-full-access> | /sandbox clear",
+    );
     const callbackData = findPreferenceCallbackByText(adapter.sent, "workspace-write");
     expect(parseTelegramSandboxCallbackData(callbackData)?.mode).toBe("workspace-write");
   });
@@ -1005,8 +1127,13 @@ describe("ChannelGateway", () => {
       text: "/model",
     });
 
+    const modelPickers = listMessagesWithInlineCallback(adapter.sent, (callbackData) =>
+      Boolean(parseTelegramModelCallbackData(callbackData)),
+    );
+    expect(modelPickers.length).toBe(1);
     const picker = findLatestMessageContaining(adapter.sent, "Model preference (global)");
     expect(picker.text).toContain("点击按钮设置模型");
+    expect(picker.text).toContain("Usage: /model <name> | /model clear");
     const callbackData = findPreferenceCallbackByText(adapter.sent, "gpt-5.1");
     expect(parseTelegramModelCallbackData(callbackData)?.model).toBe("gpt-5.1");
   });
@@ -1031,8 +1158,13 @@ describe("ChannelGateway", () => {
       text: "/depth",
     });
 
+    const depthPickers = listMessagesWithInlineCallback(adapter.sent, (callbackData) =>
+      Boolean(parseTelegramDepthCallbackData(callbackData)),
+    );
+    expect(depthPickers.length).toBe(1);
     const picker = findLatestMessageContaining(adapter.sent, "Thinking depth preference (global)");
     expect(picker.text).toContain("点击按钮设置深度");
+    expect(picker.text).toContain("Usage: /depth <low|medium|high> | /depth clear");
     const callbackData = findPreferenceCallbackByText(adapter.sent, "high");
     expect(parseTelegramDepthCallbackData(callbackData)?.depth).toBe("high");
   });
@@ -1101,7 +1233,12 @@ describe("ChannelGateway", () => {
       text: "/project",
     });
 
+    const projectPickers = listMessagesWithInlineCallback(adapter.sent, (callbackData) =>
+      Boolean(parseTelegramProjectPickCallbackData(callbackData)),
+    );
+    expect(projectPickers.length).toBe(1);
     const firstPage = findLatestMessageContaining(adapter.sent, "Projects 1-8/10");
+    expect(firstPage.text).toContain("Use /project in Telegram to choose another project.");
     const firstPageRows = (firstPage.metadata as
       | {
           telegram_reply_markup?: {
@@ -1111,6 +1248,10 @@ describe("ChannelGateway", () => {
       | undefined)?.telegram_reply_markup?.inline_keyboard;
     const firstButtonText = firstPageRows?.[0]?.[0]?.text ?? "";
     expect(firstButtonText).toContain("beta");
+    const hasCreateButton = (firstPageRows ?? []).some((row) =>
+      row.some((button) => button.text?.includes("新建 project")),
+    );
+    expect(hasCreateButton).toBeTrue();
 
     const moreToken = findProjectPickCallbackByText(adapter.sent, "更多");
     await gateway.handleInbound({
@@ -1126,6 +1267,61 @@ describe("ChannelGateway", () => {
     expect(
       adapter.sent.some((message) => message.text.includes("Projects 9-10/10")),
     ).toBeTrue();
+  });
+
+  test("creates project from picker bottom button and switches active project", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), "open-carapace-project-create-"));
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+      projectRootDir: projectRoot,
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-create",
+      messageId: "pc-1",
+      text: "/project",
+    });
+    const createToken = findProjectPickCallbackByText(adapter.sent, "新建 project");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-create",
+      messageId: "pc-2",
+      text: "/project-pick",
+      metadata: {
+        [TELEGRAM_PROJECT_PICK_META_TOKEN]: createToken,
+      },
+    });
+    expect(
+      adapter.sent.some((message) => message.text.includes("请直接发送新 project 名称")),
+    ).toBeTrue();
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-create",
+      messageId: "pc-3",
+      text: "my-new-project",
+    });
+    expect(
+      adapter.sent.some((message) => message.text.includes("已新建并切换 project：my-new-project")),
+    ).toBeTrue();
+    expect(existsSync(path.join(projectRoot, "my-new-project"))).toBeTrue();
+
+    const turn = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-project-create",
+      messageId: "pc-4",
+      text: "hello after create",
+    });
+    expect(turn.sessionId).toContain("agent.my-new-project.");
   });
 
   test("binds turns to selected project and scopes /sessions by project", async () => {

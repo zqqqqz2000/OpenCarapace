@@ -82,4 +82,25 @@ describe("FileSessionStore", () => {
     const reloaded = new SessionManager(new FileSessionStore({ filePath }));
     expect(reloaded.snapshot("s-delete")).toBeUndefined();
   });
+
+  test("persists scoped preferences and keeps internal scope records out of session list", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "open-carapace-session-file-scoped-"));
+    const filePath = path.join(dir, "sessions.json");
+    const sessionsA = new SessionManager(new FileSessionStore({ filePath }));
+
+    sessionsA.setGlobalMetadata({
+      model: "gpt-5.1",
+      thinking_depth: "high",
+    });
+    sessionsA.setWorkspaceMetadata("agent.alpha.telegram.chat.main", {
+      sandbox_mode: "workspace-write",
+    });
+
+    const sessionsB = new SessionManager(new FileSessionStore({ filePath }));
+    const metadata = sessionsB.getMetadata("agent.alpha.telegram.chat.thread");
+    expect(metadata.model).toBe("gpt-5.1");
+    expect(metadata.thinking_depth).toBe("high");
+    expect(metadata.sandbox_mode).toBe("workspace-write");
+    expect(sessionsB.list()).toEqual([]);
+  });
 });

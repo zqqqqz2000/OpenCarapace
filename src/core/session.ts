@@ -1,10 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
+  parseChannelSessionId,
+} from "../channels/session-key.js";
 import type { AgentId, ChatMessage } from "./types.js";
 
 const SESSION_STORE_LOCK_TIMEOUT_MS = 5000;
 const SESSION_STORE_LOCK_RETRY_MS = 20;
 const SESSION_STORE_LOCK_STALE_MS = 30_000;
+const SESSION_BRANCH_DELIMITER = "::";
+const INTERNAL_SCOPE_SESSION_PREFIX = "__oc_scope__:";
+const GLOBAL_SCOPE_SESSION_ID = `${INTERNAL_SCOPE_SESSION_PREFIX}global`;
+const WORKSPACE_SCOPE_SESSION_PREFIX = `${INTERNAL_SCOPE_SESSION_PREFIX}workspace:`;
+const DEFAULT_WORKSPACE_SCOPE_KEY = "default";
+const INTERNAL_SCOPE_AGENT_ID = "codex";
 
 export type SessionRecord = {
   id: string;
@@ -48,6 +58,32 @@ export class InMemorySessionStore implements SessionStore {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stripSessionBranchSuffix(sessionId: string): string {
+  const normalized = sessionId.trim();
+  const markerIndex = normalized.indexOf(SESSION_BRANCH_DELIMITER);
+  if (markerIndex <= 0) {
+    return normalized;
+  }
+  return normalized.slice(0, markerIndex);
+}
+
+function isInternalScopeSessionId(sessionId: string): boolean {
+  return sessionId.trim().startsWith(INTERNAL_SCOPE_SESSION_PREFIX);
+}
+
+function resolveWorkspaceScopeKey(sessionId: string): string {
+  const normalized = stripSessionBranchSuffix(sessionId);
+  const parsed = parseChannelSessionId(normalized);
+  if (!parsed) {
+    return DEFAULT_WORKSPACE_SCOPE_KEY;
+  }
+  return parsed.projectKey || DEFAULT_CHANNEL_SESSION_PROJECT_KEY;
+}
+
+function resolveWorkspaceScopeSessionId(sessionId: string): string {
+  return `${WORKSPACE_SCOPE_SESSION_PREFIX}${resolveWorkspaceScopeKey(sessionId)}`;
 }
 
 function toChatMessage(input: unknown): ChatMessage | null {
@@ -299,6 +335,34 @@ export class FileSessionStore implements SessionStore {
 export class SessionManager {
   constructor(private readonly store: SessionStore) {}
 
+  private readMetadata(recordId: string): Record<string, unknown> {
+    return { ...(this.store.get(recordId)?.metadata ?? {}) };
+  }
+
+  private setScopedMetadata(recordId: string, patch: Record<string, unknown>): SessionRecord {
+    const now = Date.now();
+    const existing = this.store.get(recordId);
+    const next: SessionRecord = existing
+      ? {
+          ...existing,
+          metadata: {
+            ...(existing.metadata ?? {}),
+            ...patch,
+          },
+          updatedAt: now,
+        }
+      : {
+          id: recordId,
+          agentId: INTERNAL_SCOPE_AGENT_ID,
+          createdAt: now,
+          updatedAt: now,
+          messages: [],
+          metadata: { ...patch },
+        };
+    this.store.save(next);
+    return next;
+  }
+
   ensure(sessionId: string, agentId: AgentId): SessionRecord {
     const existing = this.store.get(sessionId);
     if (existing) {
@@ -339,9 +403,11 @@ export class SessionManager {
   }
 
   list(): SessionRecord[] {
-    return [...this.store.list()].sort(
-      (left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id),
-    );
+    return [...this.store.list()]
+      .filter((session) => !isInternalScopeSessionId(session.id))
+      .sort(
+        (left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id),
+      );
   }
 
   setAgent(sessionId: string, nextAgentId: AgentId): SessionRecord {
@@ -382,8 +448,40 @@ export class SessionManager {
     return next;
   }
 
+  setGlobalMetadata(patch: Record<string, unknown>): SessionRecord {
+    return this.setScopedMetadata(GLOBAL_SCOPE_SESSION_ID, patch);
+  }
+
+  setWorkspaceMetadata(sessionId: string, patch: Record<string, unknown>): SessionRecord {
+    return this.setScopedMetadata(resolveWorkspaceScopeSessionId(sessionId), patch);
+  }
+
+  getGlobalMetadata(): Record<string, unknown> {
+    return this.readMetadata(GLOBAL_SCOPE_SESSION_ID);
+  }
+
+  getWorkspaceMetadata(sessionId: string): Record<string, unknown> {
+    return this.readMetadata(resolveWorkspaceScopeSessionId(sessionId));
+  }
+
   getMetadata(sessionId: string): Record<string, unknown> {
-    return { ...(this.store.get(sessionId)?.metadata ?? {}) };
+    const sessionMetadata = this.readMetadata(sessionId);
+    const workspaceMetadata = this.getWorkspaceMetadata(sessionId);
+    const globalMetadata = this.getGlobalMetadata();
+
+    const merged: Record<string, unknown> = {
+      ...sessionMetadata,
+    };
+    if (Object.prototype.hasOwnProperty.call(workspaceMetadata, "sandbox_mode")) {
+      merged.sandbox_mode = workspaceMetadata.sandbox_mode;
+    }
+    if (Object.prototype.hasOwnProperty.call(globalMetadata, "model")) {
+      merged.model = globalMetadata.model;
+    }
+    if (Object.prototype.hasOwnProperty.call(globalMetadata, "thinking_depth")) {
+      merged.thinking_depth = globalMetadata.thinking_depth;
+    }
+    return merged;
   }
 
   delete(sessionId: string): void {

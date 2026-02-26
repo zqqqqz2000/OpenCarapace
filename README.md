@@ -49,6 +49,7 @@ bun run opencarapace gateway
 
 - Send message in Telegram chat to trigger Codex.
 - Core commands: `/help`, `/status`, `/new`, `/model`, `/depth`, `/sandbox`.
+- Scope notes: `/model` and `/depth` are global; `/sandbox` is shared by workspace(project).
 - Telegram attachments are downloaded to local temp storage and injected into prompt context.
 
 ## Channel Modes

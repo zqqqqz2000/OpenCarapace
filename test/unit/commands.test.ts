@@ -208,6 +208,23 @@ describe("ConversationCommandService", () => {
     expect(clearResult.finalText).toContain("Model preference cleared");
   });
 
+  test("shares /model preference globally across sessions", () => {
+    const service = createService();
+    service.execute({
+      sessionId: "s-model-global-a",
+      currentAgentId: "codex",
+      input: "/model gpt-5.1",
+    });
+
+    const status = service.execute({
+      sessionId: "s-model-global-b",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(status.handled).toBeTrue();
+    expect(status.finalText).toContain("- model: gpt-5.1");
+  });
+
   test("sets thinking depth by /depth", () => {
     const service = createService();
     const setResult = service.execute({
@@ -225,6 +242,23 @@ describe("ConversationCommandService", () => {
       input: "/status",
     });
     expect(status.finalText).toContain("- thinkingDepth: high");
+  });
+
+  test("shares /depth globally across sessions", () => {
+    const service = createService();
+    service.execute({
+      sessionId: "s-depth-global-a",
+      currentAgentId: "codex",
+      input: "/depth low",
+    });
+
+    const status = service.execute({
+      sessionId: "s-depth-global-b",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(status.handled).toBeTrue();
+    expect(status.finalText).toContain("- thinkingDepth: low");
   });
 
   test("sets and clears codex sandbox mode by /sandbox", () => {
@@ -251,6 +285,44 @@ describe("ConversationCommandService", () => {
     });
     expect(clearResult.handled).toBeTrue();
     expect(clearResult.finalText).toContain("Sandbox mode cleared");
+  });
+
+  test("shares /sandbox by workspace and isolates different workspaces", () => {
+    const service = createService();
+
+    service.execute({
+      sessionId: "agent.alpha.telegram.chat.main",
+      currentAgentId: "codex",
+      input: "/sandbox open",
+    });
+
+    const sameWorkspaceStatus = service.execute({
+      sessionId: "agent.alpha.telegram.chat.thread-2",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(sameWorkspaceStatus.handled).toBeTrue();
+    expect(sameWorkspaceStatus.finalText).toContain("- sandbox: danger-full-access");
+
+    const otherWorkspaceStatus = service.execute({
+      sessionId: "agent.beta.telegram.chat.main",
+      currentAgentId: "codex",
+      input: "/status",
+    });
+    expect(otherWorkspaceStatus.handled).toBeTrue();
+    expect(otherWorkspaceStatus.finalText).toContain("- sandbox: (default)");
+  });
+
+  test("accepts sandbox short aliases", () => {
+    const service = createService();
+
+    const setResult = service.execute({
+      sessionId: "s-sandbox-alias",
+      currentAgentId: "codex",
+      input: "/sandbox ws",
+    });
+    expect(setResult.handled).toBeTrue();
+    expect(setResult.finalText).toContain("- sandbox: workspace-write");
   });
 
   test("shows codex context usage in /status when usage is available", () => {
@@ -462,5 +534,24 @@ describe("ConversationCommandService", () => {
     expect(result.finalText).toContain("- project: alpha");
     expect(result.finalText).toContain("alpha issue");
     expect(result.finalText).not.toContain("beta issue");
+  });
+
+  test("shows rename guidance by /rename", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.appendMessage("s-rename", "codex", {
+      role: "user",
+      content: "会话原始名称",
+      createdAt: Date.now(),
+    });
+
+    const result = service.execute({
+      sessionId: "s-rename",
+      currentAgentId: "codex",
+      input: "/rename",
+    });
+
+    expect(result.handled).toBeTrue();
+    expect(result.finalText).toContain("Session rename");
+    expect(result.finalText).toContain("Use /rename in Telegram");
   });
 });
