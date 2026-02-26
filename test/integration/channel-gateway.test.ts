@@ -283,6 +283,36 @@ function findSessionPickCallback(messages: ChannelOutboundMessage[]): string {
   throw new Error("missing session picker callback token");
 }
 
+function findSessionPickCallbackByText(
+  messages: ChannelOutboundMessage[],
+  text: string,
+): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData || !button.text?.includes(text)) {
+          continue;
+        }
+        const parsed = parseTelegramSessionPickCallbackData(callbackData);
+        if (parsed) {
+          return parsed.token;
+        }
+      }
+    }
+  }
+  throw new Error(`missing session picker callback token for text=${text}`);
+}
+
 function findProjectPickCallbackByText(
   messages: ChannelOutboundMessage[],
   text: string,
@@ -958,6 +988,63 @@ describe("ChannelGateway", () => {
     expect(token.length).toBeGreaterThan(0);
     expect(
       adapter.sent.some((message) => message.text.includes("点击会话可查看该会话名称和最近 20 条 history")),
+    ).toBeTrue();
+  });
+
+  test("shows session picker with top-n pagination", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      if (index > 0) {
+        await gateway.handleInbound({
+          channelId: "telegram",
+          chatId: "chat-session-picker-pagination",
+          messageId: `spn-${index}`,
+          text: "/new",
+        });
+      }
+      await gateway.handleInbound({
+        channelId: "telegram",
+        chatId: "chat-session-picker-pagination",
+        messageId: `spm-${index}`,
+        text: `session pagination seed ${index + 1}`,
+      });
+    }
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-session-picker-pagination",
+      messageId: "sp-1",
+      text: "/sessions",
+    });
+
+    expect(
+      adapter.sent.some((message) => message.text.includes("Sessions 1-8/10")),
+    ).toBeTrue();
+
+    const moreToken = findSessionPickCallbackByText(adapter.sent, "更多");
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-session-picker-pagination",
+      messageId: "sp-2",
+      text: "/session-pick",
+      metadata: {
+        [TELEGRAM_SESSION_PICK_META_TOKEN]: moreToken,
+      },
+    });
+
+    expect(
+      adapter.sent.some((message) => message.text.includes("Sessions 9-10/10")),
     ).toBeTrue();
   });
 

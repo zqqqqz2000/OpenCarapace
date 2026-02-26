@@ -58,7 +58,7 @@ import type {
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;
 const TELEGRAM_SESSION_PICK_TTL_MS = 30 * 60 * 1000;
-const TELEGRAM_SESSION_PICK_MAX_ITEMS = 20;
+const TELEGRAM_SESSION_PICK_PAGE_SIZE = 8;
 const TELEGRAM_PROJECT_PICK_TTL_MS = 30 * 60 * 1000;
 const TELEGRAM_PROJECT_PICK_PAGE_SIZE = 8;
 const TELEGRAM_RENAME_PICK_TTL_MS = 30 * 60 * 1000;
@@ -479,12 +479,15 @@ type StackedQueueEntry = {
 
 type PendingTelegramSessionPick = {
   token: string;
-  sessionId: string;
-  sessionName: string;
   channelId: ChannelId;
   chatId: string;
   threadId?: string;
   createdAt: number;
+  action: "select" | "page";
+  projectKey: string;
+  sessionId?: string;
+  sessionName?: string;
+  page?: number;
 };
 
 type PendingTelegramRenamePick = {
@@ -1145,6 +1148,7 @@ export class ChannelGateway {
         message,
         sessionId: defaultSessionId,
         agentId,
+        conversationKey,
         token: pickToken,
       });
     }
@@ -1297,7 +1301,7 @@ export class ChannelGateway {
         await relay.finalize(decorated);
       }
       if (telegramPickerCommand === "sessions") {
-        await this.sendTelegramSessionPicker(channel, message, sessionProjectKey);
+        await this.sendTelegramSessionPicker(channel, message, sessionProjectKey, 0);
       } else if (telegramPickerCommand === "project") {
         await this.sendTelegramProjectPicker(
           channel,
@@ -1443,6 +1447,7 @@ export class ChannelGateway {
     message: ChannelInboundMessage;
     sessionId: string;
     agentId: AgentId;
+    conversationKey: string;
     token: string;
   }): Promise<ChatTurnResult> {
     this.pruneTelegramSessionPickEntries();
@@ -1471,10 +1476,32 @@ export class ChannelGateway {
     }
 
     this.pendingTelegramSessionPicks.delete(params.token);
+    if (pending.action === "page") {
+      const nextProjectKey =
+        pending.projectKey.trim() ||
+        this.resolveActiveProjectKey(params.conversationKey, params.message);
+      await this.sendTelegramSessionPicker(
+        params.channel,
+        params.message,
+        nextProjectKey,
+        pending.page ?? 0,
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
+    const pendingSessionId = pending.sessionId?.trim();
+    const pendingSessionName = pending.sessionName?.trim();
+    if (!pendingSessionId || !pendingSessionName) {
+      await this.sendAuxiliaryMessage(
+        params.channel,
+        params.message,
+        "会话选择无效，请重新执行 /sessions。",
+      );
+      return this.emptyTurnResult(params.agentId, params.sessionId);
+    }
     const replayMetadata = cloneMetadata(params.message.metadata);
     delete replayMetadata[TELEGRAM_SESSION_PICK_META_TOKEN];
-    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID] = pending.sessionId;
-    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME] = pending.sessionName;
+    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_ID] = pendingSessionId;
+    replayMetadata[TELEGRAM_SESSION_PICK_META_SESSION_NAME] = pendingSessionName;
     const replay: ChannelInboundMessage = {
       ...params.message,
       text: "/history 20",
@@ -1903,22 +1930,26 @@ export class ChannelGateway {
     channel: ChannelAdapter,
     inbound: ChannelInboundMessage,
     projectKey: string,
+    page: number,
   ): Promise<void> {
-    const sessions = this.listSessionsByProject(projectKey).slice(
-      0,
-      TELEGRAM_SESSION_PICK_MAX_ITEMS,
-    );
+    const sessions = this.listSessionsByProject(projectKey);
     if (sessions.length === 0) {
       return;
     }
     this.pruneTelegramSessionPickEntries();
 
+    const totalPages = Math.max(1, Math.ceil(sessions.length / TELEGRAM_SESSION_PICK_PAGE_SIZE));
+    const safePage = Math.min(totalPages - 1, Math.max(0, Math.floor(page)));
+    const start = safePage * TELEGRAM_SESSION_PICK_PAGE_SIZE;
+    const items = sessions.slice(start, start + TELEGRAM_SESSION_PICK_PAGE_SIZE);
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-    for (const [index, session] of sessions.entries()) {
+    for (const [index, session] of items.entries()) {
       const token = randomUUID();
       const sessionName = resolveSessionDisplayName(session);
       const pending = {
         token,
+        action: "select",
+        projectKey,
         sessionId: session.id,
         sessionName,
         channelId: inbound.channelId,
@@ -1935,21 +1966,74 @@ export class ChannelGateway {
       }
       rows.push([
         {
-          text: `${index + 1}. ${clipSessionDisplayName(sessionName)}`,
+          text: `${start + index + 1}. ${clipSessionDisplayName(sessionName)}`,
           callback_data: callbackData,
         },
       ]);
+    }
+
+    const navRow: Array<{ text: string; callback_data: string }> = [];
+    if (safePage > 0) {
+      const token = randomUUID();
+      const pending = {
+        token,
+        action: "page",
+        projectKey,
+        page: safePage - 1,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramSessionPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramSessionPicks.set(token, pending);
+      const callbackData = buildTelegramSessionPickCallbackData(token);
+      if (callbackData) {
+        navRow.push({
+          text: "◀ 上一页",
+          callback_data: callbackData,
+        });
+      }
+    }
+    if (safePage + 1 < totalPages) {
+      const token = randomUUID();
+      const pending = {
+        token,
+        action: "page",
+        projectKey,
+        page: safePage + 1,
+        channelId: inbound.channelId,
+        chatId: inbound.chatId,
+        createdAt: Date.now(),
+      } as PendingTelegramSessionPick;
+      if (inbound.threadId !== undefined) {
+        pending.threadId = inbound.threadId;
+      }
+      this.pendingTelegramSessionPicks.set(token, pending);
+      const callbackData = buildTelegramSessionPickCallbackData(token);
+      if (callbackData) {
+        navRow.push({
+          text: safePage === 0 ? "更多 ▶" : "下一页 ▶",
+          callback_data: callbackData,
+        });
+      }
+    }
+    if (navRow.length > 0) {
+      rows.push(navRow);
     }
 
     if (rows.length === 0) {
       return;
     }
 
+    const end = Math.min(sessions.length, start + items.length);
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
       chatId: inbound.chatId,
       text: [
         `当前 project：${decodeChannelSessionProjectKey(projectKey)}`,
+        `Sessions ${start + 1}-${end}/${sessions.length}（Top ${TELEGRAM_SESSION_PICK_PAGE_SIZE}）`,
         "点击会话可查看该会话名称和最近 20 条 history：",
       ].join("\n"),
       metadata: {
