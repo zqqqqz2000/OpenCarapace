@@ -34,6 +34,11 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
 } from "../../src/channels/telegram-project-picker.js";
 import {
+  parseTelegramDepthCallbackData,
+  parseTelegramModelCallbackData,
+  parseTelegramSandboxCallbackData,
+} from "../../src/channels/telegram-preferences-picker.js";
+import {
   parseTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_TOKEN,
 } from "../../src/channels/telegram-session-picker.js";
@@ -315,6 +320,39 @@ function findLatestMessageContaining(
     }
   }
   throw new Error(`missing message containing text=${text}`);
+}
+
+function findPreferenceCallbackByText(
+  messages: ChannelOutboundMessage[],
+  text: string,
+): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const metadata = message?.metadata as
+      | {
+          telegram_reply_markup?: {
+            inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>>;
+          };
+        }
+      | undefined;
+    const rows = metadata?.telegram_reply_markup?.inline_keyboard ?? [];
+    for (const row of rows) {
+      for (const button of row) {
+        const callbackData = button.callback_data;
+        if (!callbackData || !button.text?.includes(text)) {
+          continue;
+        }
+        if (
+          parseTelegramSandboxCallbackData(callbackData) ||
+          parseTelegramModelCallbackData(callbackData) ||
+          parseTelegramDepthCallbackData(callbackData)
+        ) {
+          return callbackData;
+        }
+      }
+    }
+  }
+  throw new Error(`missing preference callback for text=${text}`);
 }
 
 describe("ChannelGateway", () => {
@@ -919,6 +957,84 @@ describe("ChannelGateway", () => {
           message.text.includes("Session:") && message.text.includes("History (last"),
       ),
     ).toBeTrue();
+  });
+
+  test("sends sandbox picker after /sandbox command", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-sandbox-picker",
+      messageId: "sp-1",
+      text: "/sandbox",
+    });
+
+    const picker = findLatestMessageContaining(adapter.sent, "Sandbox mode (workspace)");
+    expect(picker.text).toContain("点击按钮直接切换");
+    const callbackData = findPreferenceCallbackByText(adapter.sent, "workspace-write");
+    expect(parseTelegramSandboxCallbackData(callbackData)?.mode).toBe("workspace-write");
+  });
+
+  test("sends model picker after /model command", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-model-picker",
+      messageId: "mp-1",
+      text: "/model",
+    });
+
+    const picker = findLatestMessageContaining(adapter.sent, "Model preference (global)");
+    expect(picker.text).toContain("点击按钮设置模型");
+    const callbackData = findPreferenceCallbackByText(adapter.sent, "gpt-5.1");
+    expect(parseTelegramModelCallbackData(callbackData)?.model).toBe("gpt-5.1");
+  });
+
+  test("sends depth picker after /depth command", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+
+    const gateway = new ChannelGateway({
+      orchestrator: createDeterministicOrchestrator(),
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-depth-picker",
+      messageId: "dp-1",
+      text: "/depth",
+    });
+
+    const picker = findLatestMessageContaining(adapter.sent, "Thinking depth preference (global)");
+    expect(picker.text).toContain("点击按钮设置深度");
+    const callbackData = findPreferenceCallbackByText(adapter.sent, "high");
+    expect(parseTelegramDepthCallbackData(callbackData)?.depth).toBe("high");
   });
 
   test("shows project picker with top-n pagination and last-used ordering", async () => {

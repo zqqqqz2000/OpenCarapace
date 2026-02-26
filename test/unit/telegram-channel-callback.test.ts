@@ -12,6 +12,11 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
 } from "../../src/channels/telegram-project-picker.js";
 import {
+  buildTelegramDepthCallbackData,
+  buildTelegramModelCallbackData,
+  buildTelegramSandboxCallbackData,
+} from "../../src/channels/telegram-preferences-picker.js";
+import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_TOKEN,
 } from "../../src/channels/telegram-session-picker.js";
@@ -435,6 +440,228 @@ describe("TelegramChannelAdapter callback query inbound", () => {
     expect(answered).toBeTrue();
     expect(inbound.text).toBe("/project-pick");
     expect(inbound.metadata?.[TELEGRAM_PROJECT_PICK_META_TOKEN]).toBe(pickToken);
+  });
+
+  test("maps sandbox preference callback to /sandbox inbound command", async () => {
+    const token = "123:abc";
+    const callbackId = "cbq-sandbox-pref";
+    const callbackData = buildTelegramSandboxCallbackData("workspace-write");
+    let getUpdatesCount = 0;
+    let answered = false;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/bot${token}/setMyCommands`)) {
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      if (url.endsWith(`/bot${token}/getUpdates`)) {
+        getUpdatesCount += 1;
+        if (getUpdatesCount === 1) {
+          return jsonResponse({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                callback_query: {
+                  id: callbackId,
+                  from: { id: 777, is_bot: false, username: "tester" },
+                  data: callbackData,
+                  message: {
+                    message_id: 113,
+                    chat: { id: 10001, type: "private" },
+                  },
+                },
+              },
+            ],
+          });
+        }
+        return jsonResponse({ ok: true, result: [] });
+      }
+
+      if (url.endsWith(`/bot${token}/answerCallbackQuery`)) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          callback_query_id?: string;
+          text?: string;
+        };
+        expect(body.callback_query_id).toBe(callbackId);
+        expect(String(body.text ?? "")).toContain("sandbox");
+        answered = true;
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }) as typeof fetch;
+
+    const adapter = new TelegramChannelAdapter({
+      token,
+      pollTimeoutSeconds: 1,
+      retryDelayMs: 200,
+    });
+
+    let resolveInbound: ((value: ChannelInboundMessage) => void) | null = null;
+    const inboundPromise = new Promise<ChannelInboundMessage>((resolve) => {
+      resolveInbound = resolve;
+    });
+
+    await adapter.start(async (inbound) => {
+      resolveInbound?.(inbound);
+    });
+
+    const inbound = await withTimeout(inboundPromise, 2000);
+    await adapter.stop();
+
+    expect(answered).toBeTrue();
+    expect(inbound.text).toBe("/sandbox workspace-write");
+    expect(inbound.metadata).toBeUndefined();
+  });
+
+  test("maps model preference callback to /model inbound command", async () => {
+    const token = "123:abc";
+    const callbackId = "cbq-model-pref";
+    const callbackData = buildTelegramModelCallbackData("gpt-5.1");
+    let getUpdatesCount = 0;
+    let answered = false;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/bot${token}/setMyCommands`)) {
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      if (url.endsWith(`/bot${token}/getUpdates`)) {
+        getUpdatesCount += 1;
+        if (getUpdatesCount === 1) {
+          return jsonResponse({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                callback_query: {
+                  id: callbackId,
+                  from: { id: 777, is_bot: false, username: "tester" },
+                  data: callbackData,
+                  message: {
+                    message_id: 114,
+                    chat: { id: 10001, type: "private" },
+                  },
+                },
+              },
+            ],
+          });
+        }
+        return jsonResponse({ ok: true, result: [] });
+      }
+
+      if (url.endsWith(`/bot${token}/answerCallbackQuery`)) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          callback_query_id?: string;
+          text?: string;
+        };
+        expect(body.callback_query_id).toBe(callbackId);
+        expect(String(body.text ?? "")).toContain("model");
+        answered = true;
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }) as typeof fetch;
+
+    const adapter = new TelegramChannelAdapter({
+      token,
+      pollTimeoutSeconds: 1,
+      retryDelayMs: 200,
+    });
+
+    let resolveInbound: ((value: ChannelInboundMessage) => void) | null = null;
+    const inboundPromise = new Promise<ChannelInboundMessage>((resolve) => {
+      resolveInbound = resolve;
+    });
+
+    await adapter.start(async (inbound) => {
+      resolveInbound?.(inbound);
+    });
+
+    const inbound = await withTimeout(inboundPromise, 2000);
+    await adapter.stop();
+
+    expect(answered).toBeTrue();
+    expect(inbound.text).toBe("/model gpt-5.1");
+    expect(inbound.metadata).toBeUndefined();
+  });
+
+  test("maps depth preference callback to /depth inbound command", async () => {
+    const token = "123:abc";
+    const callbackId = "cbq-depth-pref";
+    const callbackData = buildTelegramDepthCallbackData("high");
+    let getUpdatesCount = 0;
+    let answered = false;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/bot${token}/setMyCommands`)) {
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      if (url.endsWith(`/bot${token}/getUpdates`)) {
+        getUpdatesCount += 1;
+        if (getUpdatesCount === 1) {
+          return jsonResponse({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                callback_query: {
+                  id: callbackId,
+                  from: { id: 777, is_bot: false, username: "tester" },
+                  data: callbackData,
+                  message: {
+                    message_id: 115,
+                    chat: { id: 10001, type: "private" },
+                  },
+                },
+              },
+            ],
+          });
+        }
+        return jsonResponse({ ok: true, result: [] });
+      }
+
+      if (url.endsWith(`/bot${token}/answerCallbackQuery`)) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          callback_query_id?: string;
+          text?: string;
+        };
+        expect(body.callback_query_id).toBe(callbackId);
+        expect(String(body.text ?? "")).toContain("depth");
+        answered = true;
+        return jsonResponse({ ok: true, result: true });
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }) as typeof fetch;
+
+    const adapter = new TelegramChannelAdapter({
+      token,
+      pollTimeoutSeconds: 1,
+      retryDelayMs: 200,
+    });
+
+    let resolveInbound: ((value: ChannelInboundMessage) => void) | null = null;
+    const inboundPromise = new Promise<ChannelInboundMessage>((resolve) => {
+      resolveInbound = resolve;
+    });
+
+    await adapter.start(async (inbound) => {
+      resolveInbound?.(inbound);
+    });
+
+    const inbound = await withTimeout(inboundPromise, 2000);
+    await adapter.stop();
+
+    expect(answered).toBeTrue();
+    expect(inbound.text).toBe("/depth high");
+    expect(inbound.metadata).toBeUndefined();
   });
 
   test("keeps callback responsive even when another outbound request is blocked", async () => {

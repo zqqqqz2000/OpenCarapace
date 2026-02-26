@@ -20,6 +20,11 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
 } from "./telegram-project-picker.js";
 import {
+  buildTelegramDepthCallbackData,
+  buildTelegramModelCallbackData,
+  buildTelegramSandboxCallbackData,
+} from "./telegram-preferences-picker.js";
+import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_SESSION_ID,
   TELEGRAM_SESSION_PICK_META_SESSION_NAME,
@@ -204,6 +209,20 @@ function isProjectCommandText(input: string): boolean {
 
 function isRunningCommandText(input: string): boolean {
   return commandNameFromText(input) === "running";
+}
+
+function isSandboxCommandText(input: string): boolean {
+  const name = commandNameFromText(input);
+  return name === "sandbox" || name === "isolation";
+}
+
+function isModelCommandText(input: string): boolean {
+  return commandNameFromText(input) === "model";
+}
+
+function isDepthCommandText(input: string): boolean {
+  const name = commandNameFromText(input);
+  return name === "depth" || name === "thinking";
 }
 
 function readTelegramProjectPickToken(metadata: unknown): string | undefined {
@@ -1117,6 +1136,15 @@ export class ChannelGateway {
           0,
         );
       }
+      if (channel.id === "telegram" && isSandboxCommandText(message.text)) {
+        await this.sendTelegramSandboxPicker(channel, message, effectiveSessionId);
+      }
+      if (channel.id === "telegram" && isModelCommandText(message.text)) {
+        await this.sendTelegramModelPicker(channel, message, effectiveSessionId);
+      }
+      if (channel.id === "telegram" && isDepthCommandText(message.text)) {
+        await this.sendTelegramDepthPicker(channel, message, effectiveSessionId);
+      }
       return decorated;
     } catch (error) {
       if (isTurnAbortedError(error)) {
@@ -1492,6 +1520,201 @@ export class ChannelGateway {
       metadata: {
         telegram_reply_markup: {
           inline_keyboard: rows,
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramSandboxPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawMode =
+      typeof metadata.sandbox_mode === "string" ? metadata.sandbox_mode.trim() : "";
+    const currentMode = rawMode || "(default)";
+    const isCurrent = (
+      mode: "read-only" | "workspace-write" | "danger-full-access" | "clear",
+    ): boolean => {
+      if (mode === "clear") {
+        return !rawMode;
+      }
+      return rawMode === mode;
+    };
+
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: [
+        "Sandbox mode (workspace)",
+        `- current: ${currentMode}`,
+        "点击按钮直接切换：",
+      ].join("\n"),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("read-only") ? "✅ " : ""}read-only`,
+                callback_data: buildTelegramSandboxCallbackData("read-only"),
+              },
+              {
+                text: `${isCurrent("workspace-write") ? "✅ " : ""}workspace-write`,
+                callback_data: buildTelegramSandboxCallbackData("workspace-write"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("danger-full-access") ? "✅ " : ""}danger-full-access`,
+                callback_data: buildTelegramSandboxCallbackData("danger-full-access"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramSandboxCallbackData("clear"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramModelPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawModel =
+      typeof metadata.model === "string" ? metadata.model.trim() : "";
+    const currentModel = rawModel || "(default)";
+    const isCurrent = (model: "gpt-5" | "gpt-5.1" | "clear"): boolean => {
+      if (model === "clear") {
+        return !rawModel;
+      }
+      return rawModel === model;
+    };
+
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: [
+        "Model preference (global)",
+        `- current: ${currentModel}`,
+        "点击按钮设置模型：",
+      ].join("\n"),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("gpt-5") ? "✅ " : ""}gpt-5`,
+                callback_data: buildTelegramModelCallbackData("gpt-5"),
+              },
+              {
+                text: `${isCurrent("gpt-5.1") ? "✅ " : ""}gpt-5.1`,
+                callback_data: buildTelegramModelCallbackData("gpt-5.1"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramModelCallbackData("clear"),
+              },
+              {
+                text: "custom...",
+                callback_data: buildTelegramModelCallbackData("custom"),
+              },
+            ],
+          ],
+        },
+      },
+    };
+    if (inbound.accountId) {
+      outbound.accountId = inbound.accountId;
+    }
+    if (inbound.threadId) {
+      outbound.threadId = inbound.threadId;
+    }
+    if (inbound.messageId) {
+      outbound.replyToMessageId = inbound.messageId;
+    }
+    await channel.sendMessage(outbound);
+  }
+
+  private async sendTelegramDepthPicker(
+    channel: ChannelAdapter,
+    inbound: ChannelInboundMessage,
+    sessionId: string,
+  ): Promise<void> {
+    const metadata = this.orchestrator.sessions.getMetadata(sessionId);
+    const rawDepth =
+      typeof metadata.thinking_depth === "string"
+        ? metadata.thinking_depth.trim()
+        : "";
+    const currentDepth = rawDepth || "(default)";
+    const isCurrent = (depth: "low" | "medium" | "high" | "clear"): boolean => {
+      if (depth === "clear") {
+        return !rawDepth;
+      }
+      return rawDepth === depth;
+    };
+
+    const outbound: ChannelOutboundMessage = {
+      channelId: channel.id,
+      chatId: inbound.chatId,
+      text: [
+        "Thinking depth preference (global)",
+        `- current: ${currentDepth}`,
+        "点击按钮设置深度：",
+      ].join("\n"),
+      metadata: {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: `${isCurrent("low") ? "✅ " : ""}low`,
+                callback_data: buildTelegramDepthCallbackData("low"),
+              },
+              {
+                text: `${isCurrent("medium") ? "✅ " : ""}medium`,
+                callback_data: buildTelegramDepthCallbackData("medium"),
+              },
+              {
+                text: `${isCurrent("high") ? "✅ " : ""}high`,
+                callback_data: buildTelegramDepthCallbackData("high"),
+              },
+            ],
+            [
+              {
+                text: `${isCurrent("clear") ? "✅ " : ""}clear(default)`,
+                callback_data: buildTelegramDepthCallbackData("clear"),
+              },
+            ],
+          ],
         },
       },
     };

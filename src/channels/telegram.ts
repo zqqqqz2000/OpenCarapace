@@ -6,6 +6,7 @@ import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
   parseTelegramProjectPickCallbackData,
 } from "./telegram-project-picker.js";
+import { resolveTelegramPreferenceCommandFromCallbackData } from "./telegram-preferences-picker.js";
 import {
   TELEGRAM_SESSION_PICK_META_TOKEN,
   parseTelegramSessionPickCallbackData,
@@ -1051,12 +1052,14 @@ export class TelegramChannelAdapter implements ChannelAdapter {
     const runningQuoteRequested = isTurnRunningQuoteCallbackData(rawData);
     const sessionPick = parseTelegramSessionPickCallbackData(rawData);
     const projectPick = parseTelegramProjectPickCallbackData(rawData);
+    const preferenceCommand = resolveTelegramPreferenceCommandFromCallbackData(rawData);
     if (
       !decision &&
       !stopRequested &&
       !runningQuoteRequested &&
       !sessionPick &&
-      !projectPick
+      !projectPick &&
+      !preferenceCommand
     ) {
       logTelegramDebug("callback_query.ignored_unrecognized_data", {
         callbackId: redactValue(callbackId),
@@ -1086,7 +1089,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
           ? "/session-pick"
           : projectPick
             ? "/project-pick"
-            : "/turn-decision",
+            : preferenceCommand
+              ? preferenceCommand.commandText
+              : "/turn-decision",
       raw: callbackQuery,
     };
     if (decision) {
@@ -1141,7 +1146,9 @@ export class TelegramChannelAdapter implements ChannelAdapter {
             : "已选择 stack"
           : sessionPick
             ? "已选择会话"
-            : "已选择项目",
+            : projectPick
+              ? "已选择项目"
+              : (preferenceCommand?.ackText ?? "已选择偏好"),
     );
     logTelegramDebug("callback_query.dispatch_inbound", {
       callbackId: redactValue(callbackId),
