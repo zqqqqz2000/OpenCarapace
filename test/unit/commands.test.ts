@@ -391,6 +391,25 @@ describe("ConversationCommandService", () => {
     expect(nextMetadata.claude_session_id).toBe("");
   });
 
+  test("shows previous session name instead of session id when /new switches", () => {
+    const { service, sessions } = createServiceBundle();
+    sessions.setMetadata("s-reset-name", "claude-code", {
+      session_name: "旧会话名称",
+      session_name_source: "manual",
+    });
+
+    const created = service.execute({
+      sessionId: "s-reset-name",
+      currentAgentId: "claude-code",
+      input: "/new",
+    });
+
+    expect(created.handled).toBeTrue();
+    expect(created.finalText).toContain("Started a new session.");
+    expect(created.finalText).toContain("- previous: 旧会话名称");
+    expect(created.finalText).not.toContain("- previous: s-reset-name");
+  });
+
   test("stops running turn by /stop", () => {
     let cancelCalls = 0;
     const service = createServiceBundle({

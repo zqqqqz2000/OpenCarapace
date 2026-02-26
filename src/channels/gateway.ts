@@ -1164,7 +1164,7 @@ export class ChannelGateway {
     }
     const sessionProjectKey = resolveSessionProjectKey(sessionId);
     this.activeProjectsByConversation.set(conversationKey, sessionProjectKey);
-    this.activeSessionsByConversation.set(conversationKey, sessionId);
+    this.setActiveSessionForConversation(conversationKey, sessionId);
     const selectedSessionName = readTelegramSessionPickSessionName(message.metadata);
     const turnDecision = readTurnDecisionSelection(message.metadata);
     if (turnDecision) {
@@ -1278,7 +1278,7 @@ export class ChannelGateway {
         : result;
       const effectiveSessionId = decorated.sessionId || sessionId;
       if (effectiveSessionId !== sessionId) {
-        this.activeSessionsByConversation.set(conversationKey, effectiveSessionId);
+        this.setActiveSessionForConversation(conversationKey, effectiveSessionId);
         this.activeProjectsByConversation.set(
           conversationKey,
           resolveSessionProjectKey(effectiveSessionId),
@@ -1730,7 +1730,7 @@ export class ChannelGateway {
     this.pendingTelegramConversationInputs.delete(params.conversationKey);
     const nextProjectKey = normalizeChannelSessionProjectKey(projectName);
     this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
-    this.activeSessionsByConversation.delete(params.conversationKey);
+    this.clearActiveSessionForConversation(params.conversationKey);
     await this.sendAuxiliaryMessage(
       params.channel,
       params.message,
@@ -1813,7 +1813,7 @@ export class ChannelGateway {
     }
     this.pendingTelegramConversationInputs.delete(params.conversationKey);
     this.activeProjectsByConversation.set(params.conversationKey, nextProjectKey);
-    this.activeSessionsByConversation.delete(params.conversationKey);
+    this.clearActiveSessionForConversation(params.conversationKey);
     const projectName = decodeChannelSessionProjectKey(nextProjectKey);
     await this.sendAuxiliaryMessage(
       params.channel,
@@ -2570,8 +2570,51 @@ export class ChannelGateway {
       buildChannelSessionId(message, {
         projectKey,
       });
-    this.activeSessionsByConversation.set(conversationKey, resolved);
+    this.setActiveSessionForConversation(conversationKey, resolved);
     return resolved;
+  }
+
+  private setActiveSessionForConversation(conversationKey: string, nextSessionId: string): void {
+    const normalizedNextSessionId = nextSessionId.trim();
+    if (!normalizedNextSessionId) {
+      return;
+    }
+    const previousSessionId = this.activeSessionsByConversation.get(conversationKey);
+    if (previousSessionId && previousSessionId !== normalizedNextSessionId) {
+      this.maybeDeleteEmptySessionOnSwitch(previousSessionId, conversationKey);
+    }
+    this.activeSessionsByConversation.set(conversationKey, normalizedNextSessionId);
+  }
+
+  private clearActiveSessionForConversation(conversationKey: string): void {
+    const previousSessionId = this.activeSessionsByConversation.get(conversationKey);
+    if (previousSessionId) {
+      this.maybeDeleteEmptySessionOnSwitch(previousSessionId, conversationKey);
+    }
+    this.activeSessionsByConversation.delete(conversationKey);
+  }
+
+  private maybeDeleteEmptySessionOnSwitch(sessionId: string, conversationKey: string): void {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId || this.orchestrator.isTurnRunning(normalizedSessionId)) {
+      return;
+    }
+    for (const [key, activeSessionId] of this.activeSessionsByConversation.entries()) {
+      if (key !== conversationKey && activeSessionId === normalizedSessionId) {
+        return;
+      }
+    }
+    const snapshot = this.orchestrator.sessions.snapshot(normalizedSessionId);
+    if (!snapshot || snapshot.messages.length > 0) {
+      return;
+    }
+    this.pendingTurnDecisions.delete(normalizedSessionId);
+    this.stackedTurnQueues.delete(normalizedSessionId);
+    this.orchestrator.sessions.delete(normalizedSessionId);
+    logGatewayDebug("gateway.session.empty.pruned", {
+      conversationKey,
+      sessionId: normalizedSessionId,
+    });
   }
 
   private inferLatestProjectForConversation(

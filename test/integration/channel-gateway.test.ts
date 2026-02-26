@@ -584,6 +584,62 @@ describe("ChannelGateway", () => {
     expect(orchestrator.sessions.snapshot(afterNew.sessionId)?.messages.length).toBe(2);
   });
 
+  test("deletes empty session when switching to another session from picker", async () => {
+    const adapter = new CaptureChannelAdapter();
+    const registry = new ChannelRegistry();
+    registry.register(adapter);
+    const orchestrator = createDeterministicOrchestrator();
+
+    const gateway = new ChannelGateway({
+      orchestrator,
+      registry,
+      routing: {
+        defaultAgentId: "codex",
+      },
+    });
+
+    const first = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-empty-session-prune",
+      messageId: "p1",
+      text: "old-turn-for-prune",
+    });
+    orchestrator.sessions.setMetadata(first.sessionId, first.agentId, {
+      session_name: "old session name",
+      session_name_source: "manual",
+    });
+
+    const created = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-empty-session-prune",
+      messageId: "p2",
+      text: "/new",
+    });
+    const emptySessionId = String(created.sessionId ?? "");
+    expect(orchestrator.sessions.snapshot(emptySessionId)?.messages.length).toBe(0);
+
+    await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-empty-session-prune",
+      messageId: "p3",
+      text: "/sessions",
+    });
+    const oldToken = findSessionPickCallbackByText(adapter.sent, "old session name");
+    const picked = await gateway.handleInbound({
+      channelId: "telegram",
+      chatId: "chat-empty-session-prune",
+      messageId: "p4",
+      text: "/session-pick",
+      metadata: {
+        [TELEGRAM_SESSION_PICK_META_TOKEN]: oldToken,
+      },
+    });
+
+    expect(picked.sessionId).toBe(first.sessionId);
+    expect(orchestrator.sessions.snapshot(first.sessionId)).toBeDefined();
+    expect(orchestrator.sessions.snapshot(emptySessionId)).toBeUndefined();
+  });
+
   test("shows steer/stack choices when new non-command input arrives during a running turn", async () => {
     const adapter = new CaptureChannelAdapter();
     const registry = new ChannelRegistry();

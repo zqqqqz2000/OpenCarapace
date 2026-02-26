@@ -649,6 +649,19 @@ export class ConversationCommandService {
 
   private startNewSession(currentSessionId: string, currentAgentId: AgentId): CommandExecutionResult {
     const normalizedCurrentId = currentSessionId.trim();
+    const previousSession = this.deps.sessions.snapshot(normalizedCurrentId);
+    const previousMetadataName =
+      typeof previousSession?.metadata?.session_name === "string"
+        ? previousSession.metadata.session_name.trim()
+        : "";
+    const previousDisplayName = clipSessionListName(
+      previousMetadataName
+        ? previousMetadataName
+        : previousSession && previousSession.messages.length > 0
+          ? resolveSessionDisplayName(previousSession)
+          : "New Session",
+      60,
+    );
     const baseSessionId = stripSessionBranchSuffix(normalizedCurrentId) || normalizedCurrentId;
 
     let nextSessionId = buildDerivedSessionId(baseSessionId);
@@ -671,7 +684,7 @@ export class ConversationCommandService {
       sessionId: next.id,
       finalText: [
         "Started a new session.",
-        `- previous: ${normalizedCurrentId}`,
+        `- previous: ${previousDisplayName}`,
         `- session: ${next.id}`,
         `- agent: ${next.agentId}`,
       ].join("\n"),
