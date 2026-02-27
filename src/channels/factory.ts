@@ -137,42 +137,6 @@ export function createChannelRegistryFromConfig(params?: {
     );
   }
 
-  const wechatEnabled = config?.channels?.wechat?.enabled ?? false;
-  if (wechatEnabled) {
-    const wechatOptions = {
-      id: "wechat",
-      displayName: "WeChat (Bridge)",
-      maxMessageChars: 1500,
-      supportsThreads: false,
-    } as {
-      id: "wechat";
-      displayName: string;
-      maxMessageChars: number;
-      supportsThreads: boolean;
-      inboundSecret?: string;
-      outboundWebhookUrl?: string;
-    };
-    const inboundSecret = resolveSecret({
-      value: config?.channels?.wechat?.inbound_secret,
-      file: config?.channels?.wechat?.inbound_secret_file,
-      configFilePath: params?.configFilePath,
-    });
-    if (inboundSecret) {
-      wechatOptions.inboundSecret = inboundSecret;
-    }
-    const outboundWebhookUrl = resolveSecret({
-      value: config?.channels?.wechat?.outbound_webhook_url,
-      file: config?.channels?.wechat?.outbound_webhook_url_file,
-      configFilePath: params?.configFilePath,
-    });
-    if (outboundWebhookUrl) {
-      wechatOptions.outboundWebhookUrl = outboundWebhookUrl;
-    }
-    registry.register(
-      new BridgeChannelAdapter(wechatOptions),
-    );
-  }
-
   return registry;
 }
 

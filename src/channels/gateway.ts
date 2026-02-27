@@ -611,7 +611,7 @@ class ChannelTurnRelay {
       return;
     }
 
-    const chunks = splitOutboundText(result.finalText, maxChars);
+    const chunks = splitOutboundText(fullText || result.finalText, maxChars);
     if (chunks.length === 0) {
       await this.sendText("暂无可读结果，请重试。", undefined, "final.empty_fallback");
       return;

@@ -43,7 +43,6 @@ export type OpenCarapaceConfig = {
     };
     slack?: OpenCarapaceBridgeChannelConfig;
     discord?: OpenCarapaceBridgeChannelConfig;
-    wechat?: OpenCarapaceBridgeChannelConfig;
   };
   skills?: {
     enable_openclaw_catalog?: boolean;

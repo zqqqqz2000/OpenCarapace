@@ -112,9 +112,6 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
       discord: {
         enabled: false,
       },
-      wechat: {
-        enabled: false,
-      },
     },
     skills: {
       enable_openclaw_catalog: true,

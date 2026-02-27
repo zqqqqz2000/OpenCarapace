@@ -4,7 +4,6 @@ export type ChannelId =
   | "telegram"
   | "slack"
   | "discord"
-  | "wechat"
   | (string & {});
 
 export type ChannelInboundMessage = {

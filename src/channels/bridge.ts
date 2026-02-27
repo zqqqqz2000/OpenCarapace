@@ -78,6 +78,7 @@ export class BridgeChannelAdapter implements ChannelAdapter {
         threadId: message.threadId,
         replyToMessageId: message.replyToMessageId,
         text: message.text,
+        isMarkdown: false,
         metadata: message.metadata,
       }),
     });

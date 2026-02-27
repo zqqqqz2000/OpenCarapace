@@ -16,7 +16,7 @@ import { runGateway } from "./gateway.js";
 import { runServer } from "./server.js";
 
 const SUPPORTED_AGENT_IDS = ["codex", "claude-code"] as const;
-const ROUTABLE_CHANNEL_IDS = ["telegram", "slack", "discord", "wechat"] as const;
+const ROUTABLE_CHANNEL_IDS = ["telegram", "slack", "discord"] as const;
 
 type SupportedAgentId = (typeof SUPPORTED_AGENT_IDS)[number];
 
@@ -185,7 +185,6 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
   const telegram = config.channels?.telegram;
   const slack = config.channels?.slack;
   const discord = config.channels?.discord;
-  const wechat = config.channels?.wechat;
   const skills = config.skills;
 
   return [
@@ -194,7 +193,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
     `- session store: ${sessionStoreFile}`,
     `- project root: ${projectRootDir || "(required in config tui, subdirectories are projects)"}`,
     `- agents: codex=${codex?.enabled ?? true}, claude-code=${claude?.enabled ?? false}`,
-    `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}, wechat=${wechat?.enabled ?? false}`,
+    `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}`,
     `- openclaw catalog: ${skills?.enable_openclaw_catalog ?? true}`,
   ].join("\n");
 }
@@ -404,7 +403,7 @@ async function configureTelegramChannel(
 
 async function configureBridgeChannel(
   config: OpenCarapaceConfig,
-  key: "slack" | "discord" | "wechat",
+  key: "slack" | "discord",
   displayName: string,
 ): Promise<void> {
   const current = config.channels?.[key] ?? {};
@@ -535,7 +534,6 @@ async function configureChannelsSection(
           { value: "telegram", label: "Telegram" },
           { value: "slack", label: "Slack bridge" },
           { value: "discord", label: "Discord bridge" },
-          { value: "wechat", label: "WeChat bridge" },
           { value: "routing", label: "Routing map" },
           { value: "back", label: "Back" },
         ],
@@ -555,10 +553,6 @@ async function configureChannelsSection(
     }
     if (answer === "discord") {
       await configureBridgeChannel(config, "discord", "Discord");
-      continue;
-    }
-    if (answer === "wechat") {
-      await configureBridgeChannel(config, "wechat", "WeChat");
       continue;
     }
     if (answer === "routing") {
