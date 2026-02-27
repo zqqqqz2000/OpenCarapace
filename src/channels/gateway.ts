@@ -937,24 +937,30 @@ class ChannelTurnRelay {
     if (!this.animationEnabled) {
       return undefined;
     }
-    if (this.adapter.id !== "telegram") {
-      return undefined;
-    }
-    return {
-      telegram_reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "🛑 Stop",
-              callback_data: TURN_RUNNING_STOP_CALLBACK,
-            },
-            {
-              text: "📌 Quote",
-              callback_data: TURN_RUNNING_QUOTE_CALLBACK,
-            },
+    if (this.adapter.id === "telegram") {
+      return {
+        telegram_reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🛑 Stop",
+                callback_data: TURN_RUNNING_STOP_CALLBACK,
+              },
+              {
+                text: "📌 Quote",
+                callback_data: TURN_RUNNING_QUOTE_CALLBACK,
+              },
+            ],
           ],
-        ],
-      },
+        },
+      };
+    }
+    // For bridge channels (Slack, Discord, etc.) surface a machine-readable
+    // running indicator and a text stop hint so downstream webhooks can
+    // optionally render a stop control.
+    return {
+      bridge_running: true,
+      bridge_stop_hint: "/stop",
     };
   }
 
@@ -1835,32 +1841,46 @@ export class ChannelGateway {
       createdAt: Date.now(),
     });
 
+    const isTelegram = channel.id === "telegram";
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
       chatId: inbound.chatId,
-      text: [
-        "<b>检测到你发送了新消息</b>",
-        "当前任务仍在运行，请选择处理方式：",
-        "1. <b>steer</b>：中断当前任务并切换到新消息",
-        "2. <b>stack</b>：保持当前任务，新消息进入队列",
-      ].join("\n"),
-      metadata: {
-        telegram_parse_mode: "HTML",
-        telegram_reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "1. Steer",
-                callback_data: buildTurnDecisionCallbackData(token, "steer"),
-              },
-              {
-                text: "2. Stack",
-                callback_data: buildTurnDecisionCallbackData(token, "stack"),
-              },
-            ],
-          ],
-        },
-      },
+      text: isTelegram
+        ? [
+            "<b>检测到你发送了新消息</b>",
+            "当前任务仍在运行，请选择处理方式：",
+            "1. <b>steer</b>：中断当前任务并切换到新消息",
+            "2. <b>stack</b>：保持当前任务，新消息进入队列",
+          ].join("\n")
+        : [
+            "检测到你发送了新消息",
+            "当前任务仍在运行，请选择处理方式：",
+            "1. steer：中断当前任务并切换到新消息",
+            "2. stack：保持当前任务，新消息进入队列",
+          ].join("\n"),
+      metadata: isTelegram
+        ? {
+            telegram_parse_mode: "HTML",
+            telegram_reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "1. Steer",
+                    callback_data: buildTurnDecisionCallbackData(token, "steer"),
+                  },
+                  {
+                    text: "2. Stack",
+                    callback_data: buildTurnDecisionCallbackData(token, "stack"),
+                  },
+                ],
+              ],
+            },
+          }
+        : {
+            bridge_turn_decision_token: token,
+            bridge_steer_callback: buildTurnDecisionCallbackData(token, "steer"),
+            bridge_stack_callback: buildTurnDecisionCallbackData(token, "stack"),
+          },
     };
     if (inbound.accountId) {
       outbound.accountId = inbound.accountId;
