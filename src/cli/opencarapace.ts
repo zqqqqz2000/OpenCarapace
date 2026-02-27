@@ -11,6 +11,7 @@ import {
   saveOpenCarapaceConfig,
   setConfigValueByPath,
 } from "../config/index";
+import { type Locale, getMessages } from "../channels/i18n";
 import { runChatCli } from "./chat";
 import { runGateway } from "./gateway";
 import { runServer } from "./server";
@@ -154,6 +155,7 @@ async function promptNumberInput(
   message: string,
   fallback: number,
   placeholder?: string,
+  locale: Locale = "en",
 ): Promise<number> {
   while (true) {
     const raw = await promptTextInput(message, String(fallback), placeholder);
@@ -161,7 +163,7 @@ async function promptNumberInput(
     if (Number.isFinite(parsed)) {
       return parsed;
     }
-    note("请输入正整数（>= 1），留空可保留当前值。", "Input validation");
+    note(getMessages(locale).positiveIntegerRequired, "Input validation");
   }
 }
 
@@ -207,8 +209,10 @@ async function configureAgentBlock(params: {
   defaultEnabled: boolean;
   defaultCommand?: string;
   defaultArgs?: string[];
+  locale?: Locale;
 }): Promise<void> {
   const { config } = params;
+  const locale = params.locale ?? "en";
   const current = config.agents?.[params.key] ?? {};
   const enabledCurrent =
     typeof current.enabled === "boolean" ? current.enabled : params.defaultEnabled;
@@ -239,34 +243,49 @@ async function configureAgentBlock(params: {
 
   // ACP section (preferred when set)
   const acpCommand = await promptNormalizedInput(
-    `${params.displayName} ACP command (e.g. claude-acp / codex-acp; leave blank to use CLI; "-" to clear)`,
+    `${params.displayName} ACP command (e.g. ${params.displayName.toLowerCase().replace(/\s+/g, "-")}-acp; leave blank to use CLI; "-" to clear)`,
     acpCommandCurrent,
-    "",
+    undefined,
   );
   const acpArgsText = acpCommand
     ? await promptNormalizedInput(
         `${params.displayName} ACP args, space-separated ("-" to clear)`,
         acpArgsCurrent.join(" "),
-        "",
+        "--flag value",
       )
     : "";
 
-  // CLI section (fallback)
+  // CLI section
+  // When ACP is configured, CLI command is only a fallback – skip args/args_file prompts.
   const command = await promptNormalizedInput(
-    `${params.displayName} CLI command (fallback when ACP not set; "-" to clear)`,
+    acpCommand
+      ? `${params.displayName} CLI command (fallback when ACP not available; "-" to clear)`
+      : `${params.displayName} CLI command (fallback when ACP not set; "-" to clear)`,
     commandCurrent,
     commandPlaceholder,
   );
-  const argsText = await promptNormalizedInput(
-    `${params.displayName} CLI args, space-separated ("-" to clear)`,
-    argsCurrent.join(" "),
-    "exec {{prompt}}",
-  );
-  const argsFile = await promptNormalizedInput(
-    `${params.displayName} CLI args file (optional, takes effect when args are empty; "-" to clear)`,
-    argsFileCurrent,
-    "/path/to/args.txt",
-  );
+
+  let argsText: string | undefined;
+  let argsFile: string | undefined;
+  if (acpCommand) {
+    note(
+      `ACP mode selected – CLI command is used as fallback only. CLI args/args_file skipped.`,
+      params.displayName,
+    );
+    argsText = argsCurrent.join(" ") || undefined;
+    argsFile = argsFileCurrent || undefined;
+  } else {
+    argsText = await promptNormalizedInput(
+      `${params.displayName} CLI args, space-separated ("-" to clear)`,
+      argsCurrent.join(" "),
+      "exec {{prompt}}",
+    );
+    argsFile = await promptNormalizedInput(
+      `${params.displayName} CLI args file (optional, takes effect when args are empty; "-" to clear)`,
+      argsFileCurrent,
+      "/path/to/args.txt",
+    );
+  }
 
   config.agents = {
     ...(config.agents ?? {}),
@@ -285,6 +304,19 @@ async function configureAgentBlock(params: {
 async function configureRuntimeAndAgents(
   config: OpenCarapaceConfig,
 ): Promise<void> {
+  // Language select is the very first question so all subsequent messages use the chosen locale.
+  const languageCurrent = config.runtime?.language?.trim().toLowerCase() === "zh" ? "zh" : "en";
+  const language = guardCancel(
+    await select({
+      message: "Bot response language (used for all channel messages)",
+      initialValue: languageCurrent,
+      options: [
+        { value: "en", label: "English (en)" },
+        { value: "zh", label: "中文 (zh)" },
+      ],
+    }),
+  ) as Locale;
+
   const defaultAgentCurrent = config.runtime?.default_agent_id ?? "codex";
   const defaultAgent = guardCancel(
     await select({
@@ -297,22 +329,10 @@ async function configureRuntimeAndAgents(
     }),
   );
 
-  const languageCurrent = config.runtime?.language?.trim().toLowerCase() === "zh" ? "zh" : "en";
-  const language = guardCancel(
-    await select({
-      message: "Bot response language (used for all channel messages)",
-      initialValue: languageCurrent,
-      options: [
-        { value: "en", label: "English (en)" },
-        { value: "zh", label: "中文 (zh)" },
-      ],
-    }),
-  );
-
   const portCurrent = config.runtime?.port ?? 3000;
   const gatewayPortCurrent = config.runtime?.gateway_port ?? 3010;
-  const port = await promptNumberInput("HTTP server port", portCurrent, "3000");
-  const gatewayPort = await promptNumberInput("Gateway port", gatewayPortCurrent, "3010");
+  const port = await promptNumberInput("HTTP server port", portCurrent, "3000", language);
+  const gatewayPort = await promptNumberInput("Gateway port", gatewayPortCurrent, "3010", language);
 
   const sessionStoreFileCurrent = config.runtime?.session_store_file ?? "sessions.json";
   const sessionStoreFile = await promptNormalizedInput(
@@ -356,6 +376,7 @@ async function configureRuntimeAndAgents(
     defaultEnabled: true,
     defaultCommand: "codex",
     defaultArgs: ["exec", "{{prompt}}"],
+    locale: language,
   });
   await configureAgentBlock({
     config,
@@ -364,6 +385,7 @@ async function configureRuntimeAndAgents(
     defaultEnabled: false,
     defaultCommand: "claude",
     defaultArgs: ["-p", "{{prompt}}"],
+    locale: language,
   });
 
   note("Updated runtime and agent settings in memory.", "Runtime & Agents");
