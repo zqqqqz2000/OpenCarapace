@@ -73,7 +73,7 @@ describe("ChatOrchestrator commands", () => {
     expect(empty.finalText).toContain("Memory is empty");
   });
 
-  test("supports /tools and /grep commands", async () => {
+  test("supports /tools command", async () => {
     const orchestrator = createDeterministicOrchestrator();
 
     const tools = await orchestrator.chat({
@@ -81,14 +81,6 @@ describe("ChatOrchestrator commands", () => {
       input: "/tools",
     });
     expect(tools.finalText).toContain("Tools");
-    expect(tools.finalText).toContain("grep");
-
-    const grep = await orchestrator.chat({
-      sessionId: "cmd-tools-1",
-      input: "/grep open-carapace --path package.json --limit 2",
-    });
-    expect(grep.finalText).toContain("Grep matches");
-    expect(grep.finalText).toContain("package.json");
   });
 
   test("shows readable session name and short relative updated time in /sessions", async () => {

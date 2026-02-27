@@ -281,12 +281,6 @@ async function configureRuntimeAndAgents(
   const port = await promptNumberInput("HTTP server port", portCurrent, "3000");
   const gatewayPort = await promptNumberInput("Gateway port", gatewayPortCurrent, "3010");
 
-  const workspaceRootCurrent = config.runtime?.workspace_root ?? "";
-  const workspaceRoot = await promptNormalizedInput(
-    'Workspace root (optional, "-" to clear)',
-    workspaceRootCurrent,
-    "/path/to/workspace",
-  );
   const sessionStoreFileCurrent = config.runtime?.session_store_file ?? "sessions.json";
   const sessionStoreFile = await promptNormalizedInput(
     'Session store file ("-" to clear, default sessions.json)',
@@ -317,7 +311,6 @@ async function configureRuntimeAndAgents(
     default_agent_id: defaultAgent || "codex",
     port,
     gateway_port: gatewayPort,
-    workspace_root: workspaceRoot || "",
     session_store_file: sessionStoreFile || "",
     project_root_dir: projectRoot.trim(),
   };

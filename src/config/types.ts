@@ -9,7 +9,6 @@ export type OpenCarapaceBridgeChannelConfig = {
 export type OpenCarapaceConfig = {
   runtime?: {
     default_agent_id?: string;
-    workspace_root?: string;
     session_store_file?: string;
     project_root_dir?: string;
     port?: number;

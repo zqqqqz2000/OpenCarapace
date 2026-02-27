@@ -20,6 +20,6 @@ describe("injectable naming", () => {
   });
 
   test("supports tool kind validation", () => {
-    expect(() => assertInjectableId("tool", "openclaw.grep.workspace")).not.toThrow();
+    expect(() => assertInjectableId("tool", "openclaw.skill.lookup")).not.toThrow();
   });
 });

@@ -28,22 +28,22 @@ describe("ToolRuntime", () => {
     const runtime = new ToolRuntime();
     runtime.register(
       makeTool({
-        id: "openclaw.grep.workspace",
-        name: "grep",
-        aliases: ["rg"],
-        text: "grep ok",
+        id: "openclaw.skill.lookup",
+        name: "skill",
+        aliases: ["sk"],
+        text: "skill ok",
       }),
     );
 
-    const result = runtime.run("rg", {
+    const result = runtime.run("sk", {
       sessionId: "s1",
       currentAgentId: "codex",
-      input: "/rg hello",
+      input: "/sk hello",
       args: ["hello"],
       cwd: process.cwd(),
     });
 
-    expect(result?.text).toBe("grep ok");
+    expect(result?.text).toBe("skill ok");
   });
 
   test("rejects malformed id and duplicate aliases", () => {
@@ -60,17 +60,17 @@ describe("ToolRuntime", () => {
 
     runtime.register(
       makeTool({
-        id: "openclaw.grep.workspace",
-        name: "grep",
+        id: "openclaw.skill.lookup",
+        name: "skill",
       }),
     );
 
     expect(() =>
       runtime.register(
         makeTool({
-          id: "openclaw.skill.lookup",
-          name: "skill",
-          aliases: ["grep"],
+          id: "openclaw.other.tool",
+          name: "other",
+          aliases: ["skill"],
         }),
       ),
     ).toThrow(/duplicate tool alias/i);

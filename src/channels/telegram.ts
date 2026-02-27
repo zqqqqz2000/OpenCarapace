@@ -564,7 +564,6 @@ const TELEGRAM_COMMANDS: TelegramBotCommand[] = [
   { command: "sandbox", description: "Set codex sandbox mode for this session" },
   { command: "memory", description: "Show or clear memory entries" },
   { command: "tools", description: "List available tools" },
-  { command: "grep", description: "Search workspace text by keyword" },
   { command: "skill", description: "Search or show OpenClaw skills" },
   { command: "command", description: "Show command hub help" },
   { command: "commands", description: "Alias of help" },

@@ -50,7 +50,6 @@ export * from "./adapters/codex.js";
 export * from "./adapters/claudecode.js";
 export * from "./presets/skill-packs.js";
 export * from "./presets/tool-packs.js";
-export * from "./tools/grep-tool.js";
 export * from "./tools/skill-tool.js";
 
 export type RuntimeBootstrapOptions = {
@@ -97,12 +96,6 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
       fallbackFileName: "sessions.json",
     }),
   });
-  const workspaceRootRaw = config.runtime?.workspace_root ? expandHomePath(config.runtime.workspace_root) : "";
-  const workspaceRoot = workspaceRootRaw
-    ? path.isAbsolute(workspaceRootRaw)
-      ? workspaceRootRaw
-      : path.resolve(path.dirname(configPath), workspaceRootRaw)
-    : process.cwd();
   const readability = new ReadabilityPolicy({
     maxChars: 800,
     maxLines: 12,
@@ -189,7 +182,6 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
 
   const skillPreset = registerDefaultSkills(skills, { config });
   registerDefaultTools(tools, {
-    workspaceRoot,
     openClawSkill: skillPreset.openClawSkill,
   });
 

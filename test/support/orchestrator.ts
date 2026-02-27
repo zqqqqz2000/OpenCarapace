@@ -33,7 +33,6 @@ export function createDeterministicOrchestrator(): ChatOrchestrator {
 
   const skillPreset = registerDefaultSkills(skills);
   registerDefaultTools(tools, {
-    workspaceRoot: process.cwd(),
     openClawSkill: skillPreset.openClawSkill,
   });
 

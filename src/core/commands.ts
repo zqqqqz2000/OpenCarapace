@@ -531,9 +531,6 @@ export class ConversationCommandService {
       case "tool": {
         return this.runToolCommand(params, args[0], args.slice(1));
       }
-      case "grep": {
-        return this.runToolCommand(params, "grep", args);
-      }
       case "skill": {
         return this.runToolCommand(params, "skill", args);
       }
@@ -572,8 +569,7 @@ export class ConversationCommandService {
       "- /isolation: alias of /sandbox",
       "- /skills [catalog n]: list active skills or OpenClaw catalog skills",
       "- /tools: list enabled lightweight tools",
-      "- /tool <name> [...args]: run tool by name (grep/skill)",
-      '- /grep "<pattern>" [--path <dir-or-file>] [--limit <n>]: workspace text search',
+      "- /tool <name> [...args]: run tool by name (skill)",
       "- /skill [keywords|show <id>]: search/list OpenClaw skills",
       "- /memory [show|clear] [n]: inspect or clear memory entries",
       "- /forget: alias of /memory clear",
