@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createClaudeAcpAdapter, createCodexAcpAdapter } from "./adapters/acp";
 import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/claudecode";
 import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex";
 import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory";
@@ -47,6 +48,7 @@ export * from "./channels/factory";
 export * from "./config/index";
 export * from "./integrations/openclaw-skills";
 export * from "./adapters/backend";
+export * from "./adapters/acp";
 export * from "./adapters/codex";
 export * from "./adapters/claudecode";
 export * from "./presets/skill-packs";
@@ -104,77 +106,101 @@ export function createDefaultOrchestrator(options?: RuntimeBootstrapOptions): Ch
   let sessionTitleGenerator: SessionTitleGenerator | undefined;
 
   if (isEnabled(config.agents?.codex?.enabled, true)) {
-    const codexArgsParams = {} as {
-      values?: string[];
-      file?: string;
-      configFilePath?: string;
-    };
-    if (config.agents?.codex?.cli_args) {
-      codexArgsParams.values = config.agents.codex.cli_args;
-    }
-    if (config.agents?.codex?.cli_args_file) {
-      codexArgsParams.file = config.agents.codex.cli_args_file;
-    }
-    codexArgsParams.configFilePath = configPath;
-    const codexCliArgs = resolveStringListFromFile(codexArgsParams) ?? [];
+    // Prefer ACP transport when acp_command is configured
+    const codexAcpCommand = config.agents?.codex?.acp_command?.trim();
+    if (codexAcpCommand) {
+      const acpAdapter = createCodexAcpAdapter({
+        command: codexAcpCommand,
+        args: config.agents?.codex?.acp_args ?? [],
+      });
+      if (acpAdapter) {
+        registry.register(acpAdapter);
+      }
+    } else {
+      const codexArgsParams = {} as {
+        values?: string[];
+        file?: string;
+        configFilePath?: string;
+      };
+      if (config.agents?.codex?.cli_args) {
+        codexArgsParams.values = config.agents.codex.cli_args;
+      }
+      if (config.agents?.codex?.cli_args_file) {
+        codexArgsParams.file = config.agents.codex.cli_args_file;
+      }
+      codexArgsParams.configFilePath = configPath;
+      const codexCliArgs = resolveStringListFromFile(codexArgsParams) ?? [];
 
-    const codexCliParams = {
-      args: codexCliArgs,
-    } as {
-      command?: string;
-      args: string[];
-    };
-    const command = config.agents?.codex?.cli_command?.trim();
-    if (command) {
-      codexCliParams.command = command;
-    }
+      const codexCliParams = {
+        args: codexCliArgs,
+      } as {
+        command?: string;
+        args: string[];
+      };
+      const command = config.agents?.codex?.cli_command?.trim();
+      if (command) {
+        codexCliParams.command = command;
+      }
 
-    const codexCli = createCodexCliBackend(codexCliParams);
-    registry.register(new CodexAgentAdapter(codexCli ? { backend: codexCli } : undefined));
-    const titleGeneratorParams = {
-      args: codexCliArgs,
-    } as {
-      command?: string;
-      args: string[];
-    };
-    if (command) {
-      titleGeneratorParams.command = command;
+      const codexCli = createCodexCliBackend(codexCliParams);
+      registry.register(new CodexAgentAdapter(codexCli ? { backend: codexCli } : undefined));
+      const titleGeneratorParams = {
+        args: codexCliArgs,
+      } as {
+        command?: string;
+        args: string[];
+      };
+      if (command) {
+        titleGeneratorParams.command = command;
+      }
+      sessionTitleGenerator = createCodexSessionTitleGenerator(titleGeneratorParams) ?? undefined;
     }
-    sessionTitleGenerator = createCodexSessionTitleGenerator(titleGeneratorParams) ?? undefined;
   }
   if (isEnabled(config.agents?.claude_code?.enabled, false)) {
-    const claudeArgsParams = {} as {
-      values?: string[];
-      file?: string;
-      configFilePath?: string;
-    };
-    if (config.agents?.claude_code?.cli_args) {
-      claudeArgsParams.values = config.agents.claude_code.cli_args;
-    }
-    if (config.agents?.claude_code?.cli_args_file) {
-      claudeArgsParams.file = config.agents.claude_code.cli_args_file;
-    }
-    claudeArgsParams.configFilePath = configPath;
-    const claudeArgs = resolveStringListFromFile(claudeArgsParams) ?? [];
+    // Prefer ACP transport when acp_command is configured
+    const claudeAcpCommand = config.agents?.claude_code?.acp_command?.trim();
+    if (claudeAcpCommand) {
+      const acpAdapter = createClaudeAcpAdapter({
+        command: claudeAcpCommand,
+        args: config.agents?.claude_code?.acp_args ?? [],
+      });
+      if (acpAdapter) {
+        registry.register(acpAdapter);
+      }
+    } else {
+      const claudeArgsParams = {} as {
+        values?: string[];
+        file?: string;
+        configFilePath?: string;
+      };
+      if (config.agents?.claude_code?.cli_args) {
+        claudeArgsParams.values = config.agents.claude_code.cli_args;
+      }
+      if (config.agents?.claude_code?.cli_args_file) {
+        claudeArgsParams.file = config.agents.claude_code.cli_args_file;
+      }
+      claudeArgsParams.configFilePath = configPath;
+      const claudeArgs = resolveStringListFromFile(claudeArgsParams) ?? [];
 
-    const claudeParams = {
-      args: claudeArgs,
-    } as {
-      command?: string;
-      args: string[];
-    };
-    const claudeCommand = config.agents?.claude_code?.cli_command?.trim();
-    if (claudeCommand) {
-      claudeParams.command = claudeCommand;
-    }
+      const claudeParams = {
+        args: claudeArgs,
+      } as {
+        command?: string;
+        args: string[];
+      };
+      const claudeCommand = config.agents?.claude_code?.cli_command?.trim();
+      if (claudeCommand) {
+        claudeParams.command = claudeCommand;
+      }
 
-    const claudeBackend = createClaudeCodeCliBackend(claudeParams);
-    if (!claudeBackend) {
-      throw new Error(
-        "agents.claude_code.enabled=true but cli_command is missing in config.toml.",
-      );
+      const claudeBackend = createClaudeCodeCliBackend(claudeParams);
+      if (!claudeBackend) {
+        throw new Error(
+          "agents.claude_code.enabled=true but neither acp_command nor cli_command is set in config.toml.",
+        );
+      }
+      registry.register(new ClaudeCodeAgentAdapter(claudeBackend));
     }
-    registry.register(new ClaudeCodeAgentAdapter(claudeBackend));
   }
 
   if (registry.list().length === 0) {

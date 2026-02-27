@@ -194,7 +194,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
     `- language: ${language}`,
     `- session store: ${sessionStoreFile}`,
     `- project root: ${projectRootDir || "(required in config tui, subdirectories are projects)"}`,
-    `- agents: codex=${codex?.enabled ?? true}, claude-code=${claude?.enabled ?? false}`,
+    `- agents: codex=${codex?.enabled ?? true} (acp=${codex?.acp_command ? codex.acp_command : "off"}), claude-code=${claude?.enabled ?? false} (acp=${claude?.acp_command ? claude.acp_command : "off"})`,
     `- channels: telegram=${telegram?.enabled ?? false}, slack=${slack?.enabled ?? false}, discord=${discord?.enabled ?? false}`,
     `- openclaw catalog: ${skills?.enable_openclaw_catalog ?? true}`,
   ].join("\n");
@@ -233,9 +233,27 @@ async function configureAgentBlock(params: {
   const commandCurrent = current.cli_command ?? params.defaultCommand ?? "";
   const argsCurrent = current.cli_args ?? params.defaultArgs ?? [];
   const argsFileCurrent = current.cli_args_file ?? "";
+  const acpCommandCurrent = current.acp_command ?? "";
+  const acpArgsCurrent = current.acp_args ?? [];
   const commandPlaceholder = params.defaultCommand ?? params.displayName.toLowerCase().replace(/\s+/g, "-");
+
+  // ACP section (preferred when set)
+  const acpCommand = await promptNormalizedInput(
+    `${params.displayName} ACP command (e.g. claude-acp / codex-acp; leave blank to use CLI; "-" to clear)`,
+    acpCommandCurrent,
+    "",
+  );
+  const acpArgsText = acpCommand
+    ? await promptNormalizedInput(
+        `${params.displayName} ACP args, space-separated ("-" to clear)`,
+        acpArgsCurrent.join(" "),
+        "",
+      )
+    : "";
+
+  // CLI section (fallback)
   const command = await promptNormalizedInput(
-    `${params.displayName} CLI command ("-" to clear)`,
+    `${params.displayName} CLI command (fallback when ACP not set; "-" to clear)`,
     commandCurrent,
     commandPlaceholder,
   );
@@ -255,6 +273,8 @@ async function configureAgentBlock(params: {
     [params.key]: {
       ...current,
       enabled,
+      acp_command: acpCommand || "",
+      acp_args: acpArgsText ? acpArgsText.split(/\s+/g).filter(Boolean) : [],
       cli_command: command || "",
       cli_args: argsText ? argsText.split(/\s+/g).filter(Boolean) : [],
       cli_args_file: argsFile || "",

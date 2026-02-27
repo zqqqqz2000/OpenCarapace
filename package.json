@@ -21,6 +21,7 @@
     "typescript": "^5.8.2"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1",
     "@clack/prompts": "^1.0.1"
   }
 }

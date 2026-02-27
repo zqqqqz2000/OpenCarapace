@@ -21,12 +21,18 @@ export type OpenCarapaceConfig = {
       cli_command?: string;
       cli_args?: string[];
       cli_args_file?: string;
+      /** ACP command (e.g. codex-acp). When set, ACP transport is preferred over CLI. */
+      acp_command?: string;
+      acp_args?: string[];
     };
     claude_code?: {
       enabled?: boolean;
       cli_command?: string;
       cli_args?: string[];
       cli_args_file?: string;
+      /** ACP command (e.g. claude-acp). When set, ACP transport is preferred over CLI. */
+      acp_command?: string;
+      acp_args?: string[];
     };
   };
   channels?: {
