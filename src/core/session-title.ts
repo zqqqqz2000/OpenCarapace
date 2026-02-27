@@ -1,4 +1,4 @@
-import type { AgentId } from "./types.js";
+import type { AgentId } from "./types";
 
 export type SessionTitleGenerationParams = {
   sessionId: string;

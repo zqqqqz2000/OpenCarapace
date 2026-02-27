@@ -1,4 +1,4 @@
-import type { AgentEventSink, AgentId, AgentTurnRequest, AgentTurnResult } from "./types.js";
+import type { AgentEventSink, AgentId, AgentTurnRequest, AgentTurnResult } from "./types";
 
 export type AgentAdapterCapabilities = {
   streaming: boolean;

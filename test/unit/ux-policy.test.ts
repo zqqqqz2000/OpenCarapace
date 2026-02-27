@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
+import { ReadabilityPolicy } from "../../src/core/ux-policy";
 
 describe("ReadabilityPolicy", () => {
   test("clips long output and controls line count", () => {

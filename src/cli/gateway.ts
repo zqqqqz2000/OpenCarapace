@@ -1,6 +1,6 @@
-import { BridgeChannelAdapter, type BridgeInboundPayload } from "../channels/bridge.js";
-import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index.js";
-import { createDefaultChannelGateway } from "../index.js";
+import { BridgeChannelAdapter, type BridgeInboundPayload } from "../channels/bridge";
+import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index";
+import { createDefaultChannelGateway } from "../index";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

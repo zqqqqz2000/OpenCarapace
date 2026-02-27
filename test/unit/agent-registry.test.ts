@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { AgentRegistry } from "../../src/core/agent.js";
-import { CodexAgentAdapter } from "../../src/adapters/codex.js";
-import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
+import { AgentRegistry } from "../../src/core/agent";
+import { CodexAgentAdapter } from "../../src/adapters/codex";
+import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode";
 
 describe("AgentRegistry", () => {
   test("register and resolve adapters", () => {

@@ -9,7 +9,7 @@ import {
   resolveOpenCarapaceConfigPath,
   saveOpenCarapaceConfig,
   setConfigValueByPath,
-} from "../../src/config/index.js";
+} from "../../src/config/index";
 
 describe("config file", () => {
   test("resolves default config path under ~/.config/opencarapace", () => {

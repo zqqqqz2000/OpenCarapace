@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
-import { MemorySkill, InMemoryMemoryBank } from "../../src/core/memory-skill.js";
-import type { AgentTurnRequest } from "../../src/core/types.js";
+import { SkillRuntime, InstructionSkill } from "../../src/core/skills";
+import { MemorySkill, InMemoryMemoryBank } from "../../src/core/memory-skill";
+import type { AgentTurnRequest } from "../../src/core/types";
 
 function request(prompt: string): AgentTurnRequest {
   return {

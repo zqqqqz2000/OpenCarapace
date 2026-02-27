@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, test } from "bun:test";
-import { TelegramChannelAdapter } from "../../src/channels/telegram.js";
-import type { ChannelInboundMessage } from "../../src/channels/types.js";
+import { TelegramChannelAdapter } from "../../src/channels/telegram";
+import type { ChannelInboundMessage } from "../../src/channels/types";
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {

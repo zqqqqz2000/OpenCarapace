@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   OpenClawCatalogSkill,
   loadOpenClawSkillDocs,
-} from "../../src/integrations/openclaw-skills.js";
+} from "../../src/integrations/openclaw-skills";
 
 function writeSkill(root: string, name: string, markdown: string): void {
   const dir = path.join(root, name);

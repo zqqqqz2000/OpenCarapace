@@ -1,4 +1,4 @@
-import type { ChannelInboundMessage } from "./types.js";
+import type { ChannelInboundMessage } from "./types";
 
 export const DEFAULT_CHANNEL_SESSION_PROJECT_KEY = "main";
 

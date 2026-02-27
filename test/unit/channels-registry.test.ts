@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { ChannelRegistry } from "../../src/channels/registry.js";
-import type { ChannelAdapter } from "../../src/channels/types.js";
+import { ChannelRegistry } from "../../src/channels/registry";
+import type { ChannelAdapter } from "../../src/channels/types";
 
 function adapter(id: string): ChannelAdapter {
   return {

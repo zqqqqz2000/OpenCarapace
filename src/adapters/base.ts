@@ -1,6 +1,6 @@
-import type { AgentAdapter, AgentAdapterCapabilities } from "../core/agent.js";
-import type { AgentEventSink, AgentId, AgentTurnRequest, AgentTurnResult } from "../core/types.js";
-import type { AgentBackend } from "./backend.js";
+import type { AgentAdapter, AgentAdapterCapabilities } from "../core/agent";
+import type { AgentEventSink, AgentId, AgentTurnRequest, AgentTurnResult } from "../core/types";
+import type { AgentBackend } from "./backend";
 
 export abstract class BaseCodeAgentAdapter implements AgentAdapter {
   readonly id: AgentId;

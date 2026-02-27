@@ -5,23 +5,23 @@ import path from "node:path";
 import {
   TELEGRAM_PROJECT_PICK_META_TOKEN,
   parseTelegramProjectPickCallbackData,
-} from "./telegram-project-picker.js";
+} from "./telegram-project-picker";
 import {
   TELEGRAM_RENAME_PICK_META_TOKEN,
   parseTelegramRenamePickCallbackData,
-} from "./telegram-rename-picker.js";
-import { resolveTelegramPreferenceCommandFromCallbackData } from "./telegram-preferences-picker.js";
+} from "./telegram-rename-picker";
+import { resolveTelegramPreferenceCommandFromCallbackData } from "./telegram-preferences-picker";
 import {
   TELEGRAM_SESSION_PICK_META_TOKEN,
   parseTelegramSessionPickCallbackData,
-} from "./telegram-session-picker.js";
+} from "./telegram-session-picker";
 import {
   isTurnRunningQuoteCallbackData,
   isTurnRunningStopCallbackData,
   parseTurnDecisionCallbackData,
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_TOKEN,
-} from "./turn-decision.js";
+} from "./turn-decision";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -31,7 +31,7 @@ import type {
   ChannelInboundMessage,
   ChannelOutboundMessage,
   ChannelSendReceipt,
-} from "./types.js";
+} from "./types";
 
 type TelegramApiEnvelope<T> = {
   ok: boolean;

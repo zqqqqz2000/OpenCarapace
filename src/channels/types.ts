@@ -1,4 +1,4 @@
-import type { AgentId, AgentEvent } from "../core/types.js";
+import type { AgentId, AgentEvent } from "../core/types";
 
 export type ChannelId =
   | "telegram"

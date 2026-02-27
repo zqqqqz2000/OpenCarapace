@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { expandHomePath } from "./path.js";
+import { expandHomePath } from "./path";
 
 function normalizePath(rawPath: string, baseDir: string): string {
   const expanded = expandHomePath(rawPath);

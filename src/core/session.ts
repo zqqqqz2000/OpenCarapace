@@ -3,8 +3,8 @@ import path from "node:path";
 import {
   DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
   parseChannelSessionId,
-} from "../channels/session-key.js";
-import type { AgentId, ChatMessage } from "./types.js";
+} from "../channels/session-key";
+import type { AgentId, ChatMessage } from "./types";
 
 const SESSION_STORE_LOCK_TIMEOUT_MS = 5000;
 const SESSION_STORE_LOCK_RETRY_MS = 20;

@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { BaseCodeAgentAdapter } from "./base.js";
-import { HookAgentBackend, type AgentBackend, type BackendRunRequest, type BackendRunResult } from "./backend.js";
-import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
-import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
+import { BaseCodeAgentAdapter } from "./base";
+import { HookAgentBackend, type AgentBackend, type BackendRunRequest, type BackendRunResult } from "./backend";
+import { TurnAbortedError, toTurnAbortedError } from "../core/abort";
+import type { AgentEventSink, AgentTurnRequest } from "../core/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { ChatOrchestrator } from "../core/orchestrator.js";
-import { isTurnAbortedError } from "../core/abort.js";
-import { buildFallbackSessionTitle } from "../core/session-title.js";
-import type { SessionRecord } from "../core/session.js";
-import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
-import { ChannelRegistry } from "./registry.js";
-import { type Locale, DEFAULT_LOCALE, getMessages } from "./i18n.js";
+import { ChatOrchestrator } from "../core/orchestrator";
+import { isTurnAbortedError } from "../core/abort";
+import { buildFallbackSessionTitle } from "../core/session-title";
+import type { SessionRecord } from "../core/session";
+import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types";
+import { ChannelRegistry } from "./registry";
+import { type Locale, DEFAULT_LOCALE, getMessages } from "./i18n";
 import {
   buildChannelConversationKey,
   buildChannelSessionId,
@@ -15,27 +15,27 @@ import {
   DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
   normalizeChannelSessionProjectKey,
   parseChannelSessionId,
-} from "./session-key.js";
+} from "./session-key";
 import {
   buildTelegramProjectPickCallbackData,
   TELEGRAM_PROJECT_PICK_META_TOKEN,
-} from "./telegram-project-picker.js";
+} from "./telegram-project-picker";
 import {
   buildTelegramDepthCallbackData,
   buildTelegramModelCallbackData,
   buildTelegramSandboxCallbackData,
-} from "./telegram-preferences-picker.js";
+} from "./telegram-preferences-picker";
 import {
   buildTelegramRenamePickCallbackData,
   TELEGRAM_RENAME_PICK_META_TOKEN,
-} from "./telegram-rename-picker.js";
+} from "./telegram-rename-picker";
 import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_SESSION_ID,
   TELEGRAM_SESSION_PICK_META_SESSION_NAME,
   TELEGRAM_SESSION_PICK_META_TOKEN,
-} from "./telegram-session-picker.js";
-import type { TurnDecisionAction } from "./turn-decision.js";
+} from "./telegram-session-picker";
+import type { TurnDecisionAction } from "./turn-decision";
 import {
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_BYPASS,
@@ -44,7 +44,7 @@ import {
   TURN_RUNNING_QUOTE_CALLBACK,
   TURN_RUNNING_STOP_CALLBACK,
   buildTurnDecisionCallbackData,
-} from "./turn-decision.js";
+} from "./turn-decision";
 import type {
   ChannelAdapter,
   ChannelAgentRouting,
@@ -54,7 +54,7 @@ import type {
   ChannelInboundHandler,
   ChannelInboundMessage,
   ChannelOutboundMessage,
-} from "./types.js";
+} from "./types";
 
 const DEFAULT_PROGRESS_THROTTLE_MS = 1200;
 const DEFAULT_DELTA_PREVIEW_MAX_CHARS = 180;

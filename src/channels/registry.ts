@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelId } from "./types.js";
+import type { ChannelAdapter, ChannelId } from "./types";
 
 const CHANNEL_ID_RE = /^[a-z][a-z0-9-]*$/;
 

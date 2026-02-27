@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
-import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
+import type { AgentEventSink, AgentTurnRequest } from "../core/types";
+import { TurnAbortedError, toTurnAbortedError } from "../core/abort";
 
 export type BackendMode = "sdk" | "cli" | "hook";
 

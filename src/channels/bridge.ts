@@ -7,7 +7,7 @@ import type {
   ChannelOutboundMessage,
   ChannelSendReceipt,
   ChannelId,
-} from "./types.js";
+} from "./types";
 
 export type BridgeInboundPayload = {
   accountId?: string;

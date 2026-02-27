@@ -1,14 +1,14 @@
-import type { AgentAdapter } from "./agent.js";
-import { AgentRegistry } from "./agent.js";
-import { ConversationCommandService } from "./commands.js";
-import { HookBus } from "./hooks.js";
-import { isTurnAbortedError, toTurnAbortedError } from "./abort.js";
-import type { Skill } from "./skills.js";
-import { SkillRuntime } from "./skills.js";
-import { ToolRuntime } from "./tools.js";
-import { buildFallbackSessionTitle, normalizeSessionTitle, type SessionTitleGenerator } from "./session-title.js";
-import type { SessionStore } from "./session.js";
-import { InMemorySessionStore, SessionManager } from "./session.js";
+import type { AgentAdapter } from "./agent";
+import { AgentRegistry } from "./agent";
+import { ConversationCommandService } from "./commands";
+import { HookBus } from "./hooks";
+import { isTurnAbortedError, toTurnAbortedError } from "./abort";
+import type { Skill } from "./skills";
+import { SkillRuntime } from "./skills";
+import { ToolRuntime } from "./tools";
+import { buildFallbackSessionTitle, normalizeSessionTitle, type SessionTitleGenerator } from "./session-title";
+import type { SessionStore } from "./session";
+import { InMemorySessionStore, SessionManager } from "./session";
 import {
   type AgentId,
   type AgentEvent,
@@ -16,8 +16,8 @@ import {
   type ChatMessage,
   type ChatTurnParams,
   type ChatTurnResult,
-} from "./types.js";
-import { ReadabilityPolicy } from "./ux-policy.js";
+} from "./types";
+import { ReadabilityPolicy } from "./ux-policy";
 
 function now(): number {
   return Date.now();

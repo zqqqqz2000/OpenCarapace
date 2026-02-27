@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { cancel, confirm, intro, isCancel, note, outro, select, text } from "@clack/prompts";
-import type { OpenCarapaceConfig } from "../config/types.js";
+import type { OpenCarapaceConfig } from "../config/types";
 import {
   ensureOpenCarapaceConfig,
   loadOpenCarapaceConfig,
@@ -10,10 +10,10 @@ import {
   resolveOpenCarapaceConfigPath,
   saveOpenCarapaceConfig,
   setConfigValueByPath,
-} from "../config/index.js";
-import { runChatCli } from "./chat.js";
-import { runGateway } from "./gateway.js";
-import { runServer } from "./server.js";
+} from "../config/index";
+import { runChatCli } from "./chat";
+import { runGateway } from "./gateway";
+import { runServer } from "./server";
 
 const SUPPORTED_AGENT_IDS = ["codex", "claude-code"] as const;
 const ROUTABLE_CHANNEL_IDS = ["telegram", "slack", "discord"] as const;

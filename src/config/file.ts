@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { OpenCarapaceConfig } from "./types.js";
-import { expandHomePath } from "./path.js";
+import type { OpenCarapaceConfig } from "./types";
+import { expandHomePath } from "./path";
 
 const DEFAULT_CONFIG_RELATIVE = ".config/opencarapace/config.toml";
 

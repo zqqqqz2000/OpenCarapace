@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+import { createDeterministicOrchestrator } from "../support/orchestrator";
 
 describe("ChatOrchestrator + Codex", () => {
   test("streams status/commands and persists memory across turns", async () => {

@@ -1,5 +1,5 @@
-import type { AgentEvent, AgentTurnRequest, ChatTurnResult, TurnPatch } from "./types.js";
-import { assertInjectableId } from "./naming.js";
+import type { AgentEvent, AgentTurnRequest, ChatTurnResult, TurnPatch } from "./types";
+import { assertInjectableId } from "./naming";
 
 export type HookBeforeTurnContext = {
   request: AgentTurnRequest;

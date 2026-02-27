@@ -5,8 +5,8 @@ import type {
   AppliedSkillDescriptor,
   ChatTurnResult,
   TurnPatch,
-} from "./types.js";
-import { assertInjectableId } from "./naming.js";
+} from "./types";
+import { assertInjectableId } from "./naming";
 
 export type SkillBeforeTurnContext = {
   request: AgentTurnRequest;

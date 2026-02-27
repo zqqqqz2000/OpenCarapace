@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Skill, SkillBeforeTurnContext } from "../core/skills.js";
-import type { AgentId, TurnPatch } from "../core/types.js";
+import type { Skill, SkillBeforeTurnContext } from "../core/skills";
+import type { AgentId, TurnPatch } from "../core/types";
 
 const TOKEN_SPLIT_RE = /[^a-zA-Z0-9\u4e00-\u9fa5]+/g;
 const DEFAULT_MAX_DOCS = 200;

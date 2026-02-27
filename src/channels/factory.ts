@@ -1,10 +1,10 @@
-import type { AgentId } from "../core/types.js";
-import type { OpenCarapaceConfig } from "../config/types.js";
-import { resolveSecretValue } from "../config/secrets.js";
-import { ChannelRegistry } from "./registry.js";
-import { BridgeChannelAdapter } from "./bridge.js";
-import { TelegramChannelAdapter } from "./telegram.js";
-import type { ChannelAgentRouting, ChannelId } from "./types.js";
+import type { AgentId } from "../core/types";
+import type { OpenCarapaceConfig } from "../config/types";
+import { resolveSecretValue } from "../config/secrets";
+import { ChannelRegistry } from "./registry";
+import { BridgeChannelAdapter } from "./bridge";
+import { TelegramChannelAdapter } from "./telegram";
+import type { ChannelAgentRouting, ChannelId } from "./types";
 
 function normalizeRoutedAgentId(raw: string | undefined): AgentId | undefined {
   const normalized = raw?.trim();

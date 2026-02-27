@@ -1,6 +1,6 @@
-import type { ToolRuntime } from "../core/tools.js";
-import type { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
-import { createSkillLookupTool } from "../tools/skill-tool.js";
+import type { ToolRuntime } from "../core/tools";
+import type { OpenClawCatalogSkill } from "../integrations/openclaw-skills";
+import { createSkillLookupTool } from "../tools/skill-tool";
 
 export function registerDefaultTools(
   runtime: ToolRuntime,

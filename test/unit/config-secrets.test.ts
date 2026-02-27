@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { resolveSecretValue, resolveStringListFromFile } from "../../src/config/secrets.js";
+import { resolveSecretValue, resolveStringListFromFile } from "../../src/config/secrets";
 
 describe("config secrets", () => {
   test("reads secret from *_file path", () => {

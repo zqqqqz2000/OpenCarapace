@@ -2,51 +2,51 @@ import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { ChannelGateway } from "../../src/channels/gateway.js";
-import { ChannelRegistry } from "../../src/channels/registry.js";
-import { buildChannelSessionId } from "../../src/channels/session-key.js";
+import { ChannelGateway } from "../../src/channels/gateway";
+import { ChannelRegistry } from "../../src/channels/registry";
+import { buildChannelSessionId } from "../../src/channels/session-key";
 import type {
   ChannelAdapter,
   ChannelEditMessage,
   ChannelFileAttachment,
   ChannelOutboundMessage,
   ChannelSendReceipt,
-} from "../../src/channels/types.js";
-import type { AgentAdapter } from "../../src/core/agent.js";
-import { AgentRegistry } from "../../src/core/agent.js";
-import { TurnAbortedError } from "../../src/core/abort.js";
-import { HookBus } from "../../src/core/hooks.js";
-import { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import { InMemorySessionStore } from "../../src/core/session.js";
-import { SkillRuntime } from "../../src/core/skills.js";
-import { ToolRuntime } from "../../src/core/tools.js";
-import type { AgentEventSink, AgentTurnRequest, AgentTurnResult } from "../../src/core/types.js";
-import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
+} from "../../src/channels/types";
+import type { AgentAdapter } from "../../src/core/agent";
+import { AgentRegistry } from "../../src/core/agent";
+import { TurnAbortedError } from "../../src/core/abort";
+import { HookBus } from "../../src/core/hooks";
+import { ChatOrchestrator } from "../../src/core/orchestrator";
+import { InMemorySessionStore } from "../../src/core/session";
+import { SkillRuntime } from "../../src/core/skills";
+import { ToolRuntime } from "../../src/core/tools";
+import type { AgentEventSink, AgentTurnRequest, AgentTurnResult } from "../../src/core/types";
+import { ReadabilityPolicy } from "../../src/core/ux-policy";
 import {
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_TOKEN,
   TURN_RUNNING_QUOTE_CALLBACK,
   TURN_RUNNING_STOP_CALLBACK,
   parseTurnDecisionCallbackData,
-} from "../../src/channels/turn-decision.js";
+} from "../../src/channels/turn-decision";
 import {
   parseTelegramProjectPickCallbackData,
   TELEGRAM_PROJECT_PICK_META_TOKEN,
-} from "../../src/channels/telegram-project-picker.js";
+} from "../../src/channels/telegram-project-picker";
 import {
   parseTelegramRenamePickCallbackData,
   TELEGRAM_RENAME_PICK_META_TOKEN,
-} from "../../src/channels/telegram-rename-picker.js";
+} from "../../src/channels/telegram-rename-picker";
 import {
   parseTelegramDepthCallbackData,
   parseTelegramModelCallbackData,
   parseTelegramSandboxCallbackData,
-} from "../../src/channels/telegram-preferences-picker.js";
+} from "../../src/channels/telegram-preferences-picker";
 import {
   parseTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_TOKEN,
-} from "../../src/channels/telegram-session-picker.js";
-import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+} from "../../src/channels/telegram-session-picker";
+import { createDeterministicOrchestrator } from "../support/orchestrator";
 
 const RUNNING_EMOJI_PREFIX = /^(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)\s/;
 

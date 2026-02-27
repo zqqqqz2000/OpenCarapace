@@ -2,14 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createCodexCliBackend, CodexAgentAdapter } from "../../src/adapters/codex.js";
-import { AgentRegistry } from "../../src/core/agent.js";
-import { HookBus } from "../../src/core/hooks.js";
-import { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import { InMemorySessionStore } from "../../src/core/session.js";
-import { SkillRuntime } from "../../src/core/skills.js";
-import { ToolRuntime } from "../../src/core/tools.js";
-import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
+import { createCodexCliBackend, CodexAgentAdapter } from "../../src/adapters/codex";
+import { AgentRegistry } from "../../src/core/agent";
+import { HookBus } from "../../src/core/hooks";
+import { ChatOrchestrator } from "../../src/core/orchestrator";
+import { InMemorySessionStore } from "../../src/core/session";
+import { SkillRuntime } from "../../src/core/skills";
+import { ToolRuntime } from "../../src/core/tools";
+import { ReadabilityPolicy } from "../../src/core/ux-policy";
 
 function createPromptProbeScript(scriptPath: string, promptPath: string): void {
   const escapedPromptPath = JSON.stringify(promptPath);

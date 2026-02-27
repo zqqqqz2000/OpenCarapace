@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+import { createDeterministicOrchestrator } from "../support/orchestrator";
 
 describe("ChatOrchestrator + Claude Code", () => {
   test("emits prelude status and progress command before final text", async () => {

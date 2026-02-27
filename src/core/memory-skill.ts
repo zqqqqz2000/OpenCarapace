@@ -1,5 +1,5 @@
-import type { AgentId, ChatMessage, TurnPatch } from "./types.js";
-import type { Skill, SkillAfterTurnContext, SkillBeforeTurnContext } from "./skills.js";
+import type { AgentId, ChatMessage, TurnPatch } from "./types";
+import type { Skill, SkillAfterTurnContext, SkillBeforeTurnContext } from "./skills";
 
 export type MemoryEntry = {
   sessionId: string;

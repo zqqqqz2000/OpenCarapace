@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HookBus } from "../../src/core/hooks.js";
+import { HookBus } from "../../src/core/hooks";
 
 describe("HookBus", () => {
   test("rejects invalid id and duplicate ids", () => {

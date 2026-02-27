@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { createDefaultOrchestrator } from "../../src/index.js";
-import type { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import type { OpenCarapaceConfig } from "../../src/config/types.js";
+import { createDefaultOrchestrator } from "../../src/index";
+import type { ChatOrchestrator } from "../../src/core/orchestrator";
+import type { OpenCarapaceConfig } from "../../src/config/types";
 
 describe("E2E real codex (optional)", () => {
   const TEST_TIMEOUT_MS = 120_000;

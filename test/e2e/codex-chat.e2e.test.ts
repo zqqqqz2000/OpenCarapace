@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+import { createDeterministicOrchestrator } from "../support/orchestrator";
 
 describe("E2E chat with Codex adapter", () => {
   test("provides in-flight hints, concise process, readable final output", async () => {

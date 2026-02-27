@@ -2,14 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createClaudeCodeCliBackend, ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
-import { AgentRegistry } from "../../src/core/agent.js";
-import { HookBus } from "../../src/core/hooks.js";
-import { ChatOrchestrator } from "../../src/core/orchestrator.js";
-import { InMemorySessionStore } from "../../src/core/session.js";
-import { SkillRuntime } from "../../src/core/skills.js";
-import { ToolRuntime } from "../../src/core/tools.js";
-import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
+import { createClaudeCodeCliBackend, ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode";
+import { AgentRegistry } from "../../src/core/agent";
+import { HookBus } from "../../src/core/hooks";
+import { ChatOrchestrator } from "../../src/core/orchestrator";
+import { InMemorySessionStore } from "../../src/core/session";
+import { SkillRuntime } from "../../src/core/skills";
+import { ToolRuntime } from "../../src/core/tools";
+import { ReadabilityPolicy } from "../../src/core/ux-policy";
 
 /**
  * A probe script that captures both the CLI args and the composed prompt
@@ -179,7 +179,7 @@ describe("Claude Code prompt composition", () => {
     const registry = new AgentRegistry();
     registry.register(new ClaudeCodeAgentAdapter(backend));
 
-    const { HookBus } = await import("../../src/core/hooks.js");
+    const { HookBus } = await import("../../src/core/hooks");
     const hooks = new HookBus();
     hooks.register({
       id: "test.system.directive",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ToolRuntime, type CommandTool } from "../../src/core/tools.js";
+import { ToolRuntime, type CommandTool } from "../../src/core/tools";
 
 function makeTool(params: {
   id: string;

@@ -1,16 +1,16 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { BaseCodeAgentAdapter } from "./base.js";
-import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend.js";
-import { SdkAgentBackend } from "./backend.js";
-import { TurnAbortedError, toTurnAbortedError } from "../core/abort.js";
+import { BaseCodeAgentAdapter } from "./base";
+import type { AgentBackend, BackendRunRequest, BackendRunResult } from "./backend";
+import { SdkAgentBackend } from "./backend";
+import { TurnAbortedError, toTurnAbortedError } from "../core/abort";
 import {
   normalizeSessionTitle,
   type SessionTitleGenerationParams,
   type SessionTitleGenerator,
-} from "../core/session-title.js";
-import type { AgentEventSink, AgentTurnRequest } from "../core/types.js";
+} from "../core/session-title";
+import type { AgentEventSink, AgentTurnRequest } from "../core/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

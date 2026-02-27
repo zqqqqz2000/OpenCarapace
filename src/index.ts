@@ -1,57 +1,57 @@
 import path from "node:path";
-import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/claudecode.js";
-import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex.js";
-import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory.js";
-import { ChannelGateway } from "./channels/gateway.js";
-import { resolveLocale } from "./channels/i18n.js";
+import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/claudecode";
+import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex";
+import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory";
+import { ChannelGateway } from "./channels/gateway";
+import { resolveLocale } from "./channels/i18n";
 import {
   expandHomePath,
   loadOpenCarapaceConfig,
   resolveOpenCarapaceConfigPath,
   resolveStringListFromFile,
   type OpenCarapaceConfig,
-} from "./config/index.js";
-import { AgentRegistry } from "./core/agent.js";
-import { HookBus } from "./core/hooks.js";
-import { ChatOrchestrator } from "./core/orchestrator.js";
-import type { SessionTitleGenerator } from "./core/session-title.js";
-import { FileSessionStore } from "./core/session.js";
-import { SkillRuntime } from "./core/skills.js";
-import { ToolRuntime } from "./core/tools.js";
-import { ReadabilityPolicy } from "./core/ux-policy.js";
-import { registerDefaultSkills } from "./presets/skill-packs.js";
-import { registerDefaultTools } from "./presets/tool-packs.js";
+} from "./config/index";
+import { AgentRegistry } from "./core/agent";
+import { HookBus } from "./core/hooks";
+import { ChatOrchestrator } from "./core/orchestrator";
+import type { SessionTitleGenerator } from "./core/session-title";
+import { FileSessionStore } from "./core/session";
+import { SkillRuntime } from "./core/skills";
+import { ToolRuntime } from "./core/tools";
+import { ReadabilityPolicy } from "./core/ux-policy";
+import { registerDefaultSkills } from "./presets/skill-packs";
+import { registerDefaultTools } from "./presets/tool-packs";
 
-export * from "./core/types.js";
-export * from "./core/agent.js";
-export * from "./core/abort.js";
-export * from "./core/hooks.js";
-export * from "./core/naming.js";
-export * from "./core/session.js";
-export * from "./core/session-title.js";
-export * from "./core/skills.js";
-export * from "./core/memory-skill.js";
-export * from "./core/commands.js";
-export * from "./core/orchestrator.js";
-export * from "./core/tools.js";
-export * from "./channels/types.js";
-export * from "./channels/registry.js";
-export * from "./channels/session-key.js";
-export * from "./channels/gateway.js";
-export * from "./channels/telegram.js";
-export * from "./channels/telegram-project-picker.js";
-export * from "./channels/telegram-preferences-picker.js";
-export * from "./channels/bridge.js";
-export * from "./channels/turn-decision.js";
-export * from "./channels/factory.js";
-export * from "./config/index.js";
-export * from "./integrations/openclaw-skills.js";
-export * from "./adapters/backend.js";
-export * from "./adapters/codex.js";
-export * from "./adapters/claudecode.js";
-export * from "./presets/skill-packs.js";
-export * from "./presets/tool-packs.js";
-export * from "./tools/skill-tool.js";
+export * from "./core/types";
+export * from "./core/agent";
+export * from "./core/abort";
+export * from "./core/hooks";
+export * from "./core/naming";
+export * from "./core/session";
+export * from "./core/session-title";
+export * from "./core/skills";
+export * from "./core/memory-skill";
+export * from "./core/commands";
+export * from "./core/orchestrator";
+export * from "./core/tools";
+export * from "./channels/types";
+export * from "./channels/registry";
+export * from "./channels/session-key";
+export * from "./channels/gateway";
+export * from "./channels/telegram";
+export * from "./channels/telegram-project-picker";
+export * from "./channels/telegram-preferences-picker";
+export * from "./channels/bridge";
+export * from "./channels/turn-decision";
+export * from "./channels/factory";
+export * from "./config/index";
+export * from "./integrations/openclaw-skills";
+export * from "./adapters/backend";
+export * from "./adapters/codex";
+export * from "./adapters/claudecode";
+export * from "./presets/skill-packs";
+export * from "./presets/tool-packs";
+export * from "./tools/skill-tool";
 
 export type RuntimeBootstrapOptions = {
   config?: OpenCarapaceConfig;

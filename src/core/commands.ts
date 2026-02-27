@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { AgentRegistry } from "./agent.js";
-import { OpenClawCatalogSkill } from "../integrations/openclaw-skills.js";
+import type { AgentRegistry } from "./agent";
+import { OpenClawCatalogSkill } from "../integrations/openclaw-skills";
 import {
   DEFAULT_CHANNEL_SESSION_PROJECT_KEY,
   decodeChannelSessionProjectKey,
   parseChannelSessionId,
-} from "../channels/session-key.js";
-import { MemorySkill } from "./memory-skill.js";
-import { buildFallbackSessionTitle } from "./session-title.js";
-import type { SessionManager, SessionRecord } from "./session.js";
-import type { SkillRuntime } from "./skills.js";
-import type { ToolRuntime } from "./tools.js";
-import type { AgentId } from "./types.js";
+} from "../channels/session-key";
+import { MemorySkill } from "./memory-skill";
+import { buildFallbackSessionTitle } from "./session-title";
+import type { SessionManager, SessionRecord } from "./session";
+import type { SkillRuntime } from "./skills";
+import type { ToolRuntime } from "./tools";
+import type { AgentId } from "./types";
 
 export type ParsedSlashCommand = {
   name: string;

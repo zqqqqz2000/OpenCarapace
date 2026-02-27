@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertInjectableId, isInjectableId } from "../../src/core/naming.js";
+import { assertInjectableId, isInjectableId } from "../../src/core/naming";
 
 describe("injectable naming", () => {
   test("accepts vendor.scope.capability style ids", () => {

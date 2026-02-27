@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDeterministicOrchestrator } from "../support/orchestrator.js";
+import { createDeterministicOrchestrator } from "../support/orchestrator";
 
 describe("ChatOrchestrator commands", () => {
   test("handles slash commands without requiring agentId", async () => {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { FileSessionStore, SessionManager } from "../../src/core/session.js";
+import { FileSessionStore, SessionManager } from "../../src/core/session";
 
 describe("FileSessionStore", () => {
   test("merges writes from multiple store instances sharing one file", () => {

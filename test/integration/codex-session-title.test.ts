@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createCodexSessionTitleGenerator } from "../../src/adapters/codex.js";
+import { createCodexSessionTitleGenerator } from "../../src/adapters/codex";
 
 function createFakeCodexTitleScript(params: {
   scriptPath: string;

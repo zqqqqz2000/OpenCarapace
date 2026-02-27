@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { ConversationCommandService, parseSlashCommand } from "../../src/core/commands.js";
-import { AgentRegistry } from "../../src/core/agent.js";
-import { SessionManager, InMemorySessionStore } from "../../src/core/session.js";
-import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
-import { ToolRuntime } from "../../src/core/tools.js";
-import { CodexAgentAdapter } from "../../src/adapters/codex.js";
-import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode.js";
-import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills.js";
-import { createSkillLookupTool } from "../../src/tools/skill-tool.js";
+import { ConversationCommandService, parseSlashCommand } from "../../src/core/commands";
+import { AgentRegistry } from "../../src/core/agent";
+import { SessionManager, InMemorySessionStore } from "../../src/core/session";
+import { SkillRuntime, InstructionSkill } from "../../src/core/skills";
+import { ToolRuntime } from "../../src/core/tools";
+import { CodexAgentAdapter } from "../../src/adapters/codex";
+import { ClaudeCodeAgentAdapter } from "../../src/adapters/claudecode";
+import { OpenClawCatalogSkill } from "../../src/integrations/openclaw-skills";
+import { createSkillLookupTool } from "../../src/tools/skill-tool";
 
 function createServiceBundle(options?: {
   isSessionRunning?: (sessionId: string) => boolean;

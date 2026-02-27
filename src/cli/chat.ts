@@ -1,5 +1,5 @@
-import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index.js";
-import { createDefaultOrchestrator } from "../index.js";
+import { loadOpenCarapaceConfig, resolveOpenCarapaceConfigPath } from "../config/index";
+import { createDefaultOrchestrator } from "../index";
 
 function usage(): string {
   return [

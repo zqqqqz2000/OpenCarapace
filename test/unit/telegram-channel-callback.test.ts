@@ -1,30 +1,30 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { TelegramChannelAdapter } from "../../src/channels/telegram.js";
+import { TelegramChannelAdapter } from "../../src/channels/telegram";
 import {
   TURN_RUNNING_STOP_CALLBACK,
   TURN_RUNNING_QUOTE_CALLBACK,
   TURN_DECISION_META_ACTION,
   TURN_DECISION_META_TOKEN,
   buildTurnDecisionCallbackData,
-} from "../../src/channels/turn-decision.js";
+} from "../../src/channels/turn-decision";
 import {
   buildTelegramProjectPickCallbackData,
   TELEGRAM_PROJECT_PICK_META_TOKEN,
-} from "../../src/channels/telegram-project-picker.js";
+} from "../../src/channels/telegram-project-picker";
 import {
   buildTelegramRenamePickCallbackData,
   TELEGRAM_RENAME_PICK_META_TOKEN,
-} from "../../src/channels/telegram-rename-picker.js";
+} from "../../src/channels/telegram-rename-picker";
 import {
   buildTelegramDepthCallbackData,
   buildTelegramModelCallbackData,
   buildTelegramSandboxCallbackData,
-} from "../../src/channels/telegram-preferences-picker.js";
+} from "../../src/channels/telegram-preferences-picker";
 import {
   buildTelegramSessionPickCallbackData,
   TELEGRAM_SESSION_PICK_META_TOKEN,
-} from "../../src/channels/telegram-session-picker.js";
-import type { ChannelInboundMessage } from "../../src/channels/types.js";
+} from "../../src/channels/telegram-session-picker";
+import type { ChannelInboundMessage } from "../../src/channels/types";
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {

@@ -1,13 +1,13 @@
 import path from "node:path";
-import type { SkillRuntime } from "../core/skills.js";
-import { InstructionSkill } from "../core/skills.js";
-import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill.js";
-import type { OpenCarapaceConfig } from "../config/types.js";
-import { expandHomePath } from "../config/path.js";
+import type { SkillRuntime } from "../core/skills";
+import { InstructionSkill } from "../core/skills";
+import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill";
+import type { OpenCarapaceConfig } from "../config/types";
+import { expandHomePath } from "../config/path";
 import {
   createOpenClawCatalogSkill,
   type OpenClawCatalogSkill,
-} from "../integrations/openclaw-skills.js";
+} from "../integrations/openclaw-skills";
 
 export type SkillPresetResult = {
   memoryBank: InMemoryMemoryBank;

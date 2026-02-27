@@ -3,7 +3,7 @@ import {
   buildChannelSessionId,
   decodeChannelSessionProjectKey,
   parseChannelSessionId,
-} from "../../src/channels/session-key.js";
+} from "../../src/channels/session-key";
 
 describe("channel session key", () => {
   test("round-trips project names containing dots", () => {

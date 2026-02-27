@@ -2,8 +2,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "../../src/channels/factory.js";
-import type { OpenCarapaceConfig } from "../../src/config/types.js";
+import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "../../src/channels/factory";
+import type { OpenCarapaceConfig } from "../../src/config/types";
 
 describe("channel factory from config", () => {
   test("loads telegram and bridge channels with file-backed secrets", () => {

@@ -1,5 +1,5 @@
-import { assertInjectableId } from "./naming.js";
-import type { AgentId } from "./types.js";
+import { assertInjectableId } from "./naming";
+import type { AgentId } from "./types";
 
 const TOOL_NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
 

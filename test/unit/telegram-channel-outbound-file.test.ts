@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { TelegramChannelAdapter } from "../../src/channels/telegram.js";
+import { TelegramChannelAdapter } from "../../src/channels/telegram";
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {

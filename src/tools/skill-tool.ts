@@ -1,5 +1,5 @@
-import type { CommandTool, ToolExecutionResult } from "../core/tools.js";
-import type { OpenClawSkillDoc } from "../integrations/openclaw-skills.js";
+import type { CommandTool, ToolExecutionResult } from "../core/tools";
+import type { OpenClawSkillDoc } from "../integrations/openclaw-skills";
 
 const TOKEN_SPLIT_RE = /[^a-zA-Z0-9\u4e00-\u9fa5]+/g;
 
