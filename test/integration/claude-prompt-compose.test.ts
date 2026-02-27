@@ -183,9 +183,9 @@ describe("Claude Code prompt composition", () => {
     const hooks = new HookBus();
     hooks.register({
       id: "test.system.directive",
-      beforeTurn: async (ctx) => ({
+      beforeTurn: (ctx) => ({
         systemDirectives: ["输出格式必须是 JSON。", "不允许调用外部 API。"],
-        metadata: ctx.metadata,
+        ...(ctx.request.metadata ? { metadata: ctx.request.metadata } : {}),
       }),
     });
 
