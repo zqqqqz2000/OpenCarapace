@@ -180,6 +180,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
   const defaultAgent = config.runtime?.default_agent_id ?? "codex";
   const sessionStoreFile = config.runtime?.session_store_file ?? "sessions.json";
   const projectRootDir = config.runtime?.project_root_dir ?? "";
+  const language = config.runtime?.language ?? "en";
   const codex = config.agents?.codex;
   const claude = config.agents?.claude_code;
   const telegram = config.channels?.telegram;
@@ -190,6 +191,7 @@ function renderCurrentSummary(config: OpenCarapaceConfig): string {
   return [
     "Current config summary",
     `- default agent: ${defaultAgent}`,
+    `- language: ${language}`,
     `- session store: ${sessionStoreFile}`,
     `- project root: ${projectRootDir || "(required in config tui, subdirectories are projects)"}`,
     `- agents: codex=${codex?.enabled ?? true}, claude-code=${claude?.enabled ?? false}`,
@@ -275,6 +277,18 @@ async function configureRuntimeAndAgents(
     }),
   );
 
+  const languageCurrent = config.runtime?.language?.trim().toLowerCase() === "zh" ? "zh" : "en";
+  const language = guardCancel(
+    await select({
+      message: "Bot response language (used for all channel messages)",
+      initialValue: languageCurrent,
+      options: [
+        { value: "en", label: "English (en)" },
+        { value: "zh", label: "中文 (zh)" },
+      ],
+    }),
+  );
+
   const portCurrent = config.runtime?.port ?? 3000;
   const gatewayPortCurrent = config.runtime?.gateway_port ?? 3010;
   const port = await promptNumberInput("HTTP server port", portCurrent, "3000");
@@ -308,6 +322,7 @@ async function configureRuntimeAndAgents(
   config.runtime = {
     ...(config.runtime ?? {}),
     default_agent_id: defaultAgent || "codex",
+    language,
     port,
     gateway_port: gatewayPort,
     session_store_file: sessionStoreFile || "",

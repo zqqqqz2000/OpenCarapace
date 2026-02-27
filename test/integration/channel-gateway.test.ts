@@ -448,6 +448,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -496,6 +497,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -524,6 +526,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -549,6 +552,7 @@ describe("ChannelGateway", () => {
     const orchestrator = createDeterministicOrchestrator();
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator,
       registry,
       routing: {
@@ -591,6 +595,7 @@ describe("ChannelGateway", () => {
     const orchestrator = createDeterministicOrchestrator();
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator,
       registry,
       routing: {
@@ -646,6 +651,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -684,6 +690,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -738,6 +745,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -777,7 +785,7 @@ describe("ChannelGateway", () => {
     const firstResult = await firstPromise;
     expect(firstResult.finalText).toContain("done-1");
     expect(stackedResult.finalText).toContain("done-2");
-    expect(adapter.sent.some((message) => message.text.includes("已选择 2. stack"))).toBeTrue();
+    expect(adapter.sent.some((message) => message.text.includes("当前队列（按顺序）"))).toBeTrue();
   });
 
   test("shows ordered stacked queue items after multiple stack selections", async () => {
@@ -786,6 +794,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -867,6 +876,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -907,6 +917,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -942,6 +953,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -982,6 +994,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createSlowOrchestrator(new SlowAbortableCodexAdapter()),
       registry,
       routing: {
@@ -1019,6 +1032,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1053,6 +1067,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1110,6 +1125,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1164,6 +1180,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1223,6 +1240,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1256,6 +1274,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1287,6 +1306,7 @@ describe("ChannelGateway", () => {
     registry.register(adapter);
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1361,6 +1381,7 @@ describe("ChannelGateway", () => {
     );
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator,
       registry,
       routing: {
@@ -1419,6 +1440,7 @@ describe("ChannelGateway", () => {
     const projectRoot = mkdtempSync(path.join(os.tmpdir(), "open-carapace-project-create-"));
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1476,6 +1498,7 @@ describe("ChannelGateway", () => {
     mkdirSync(path.join(projectRoot, "proj-b"), { recursive: true });
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createDeterministicOrchestrator(),
       registry,
       routing: {
@@ -1561,6 +1584,7 @@ describe("ChannelGateway", () => {
     const orchestrator = createDeterministicOrchestrator();
 
     const gatewayA = new ChannelGateway({
+      locale: "zh",
       orchestrator,
       registry: registryA,
       routing: {
@@ -1596,6 +1620,7 @@ describe("ChannelGateway", () => {
     const registryB = new ChannelRegistry();
     registryB.register(adapterB);
     const gatewayB = new ChannelGateway({
+      locale: "zh",
       orchestrator,
       registry: registryB,
       routing: {
@@ -1625,6 +1650,7 @@ describe("ChannelGateway", () => {
     ).join("\n");
 
     const gateway = new ChannelGateway({
+      locale: "zh",
       orchestrator: createLongOutputOrchestrator(longText),
       registry,
       routing: {

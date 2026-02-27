@@ -3,6 +3,7 @@ import { ClaudeCodeAgentAdapter, createClaudeCodeCliBackend } from "./adapters/c
 import { CodexAgentAdapter, createCodexCliBackend, createCodexSessionTitleGenerator } from "./adapters/codex.js";
 import { createChannelRegistryFromConfig, resolveChannelAgentRoutingFromConfig } from "./channels/factory.js";
 import { ChannelGateway } from "./channels/gateway.js";
+import { resolveLocale } from "./channels/i18n.js";
 import {
   expandHomePath,
   loadOpenCarapaceConfig,
@@ -227,11 +228,13 @@ export function createDefaultChannelGateway(options?: RuntimeBootstrapOptions & 
       configFilePath: configPath,
     }),
     routing: resolveChannelAgentRoutingFromConfig(config),
+    locale: resolveLocale(config.runtime?.language),
   } as {
     orchestrator: ChatOrchestrator;
     registry: ReturnType<typeof createChannelRegistryFromConfig>;
     routing: ReturnType<typeof resolveChannelAgentRoutingFromConfig>;
     projectRootDir?: string;
+    locale?: ReturnType<typeof resolveLocale>;
   };
   if (projectRootDir) {
     gatewayDeps.projectRootDir = projectRootDir;

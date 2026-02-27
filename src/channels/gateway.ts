@@ -7,6 +7,7 @@ import { buildFallbackSessionTitle } from "../core/session-title.js";
 import type { SessionRecord } from "../core/session.js";
 import type { AgentEvent, AgentId, ChatTurnResult } from "../core/types.js";
 import { ChannelRegistry } from "./registry.js";
+import { type Locale, DEFAULT_LOCALE, getMessages } from "./i18n.js";
 import {
   buildChannelConversationKey,
   buildChannelSessionId,
@@ -464,6 +465,7 @@ function shouldForceSteer(metadata: unknown): boolean {
 type TurnRelayOptions = {
   progressThrottleMs?: number;
   deltaPreviewMaxChars?: number;
+  locale?: Locale;
 };
 
 type PendingTurnDecision = {
@@ -542,6 +544,7 @@ class ChannelTurnRelay {
   private progressChain: Promise<void> = Promise.resolve();
   private closed = false;
   private readonly animationEnabled: boolean;
+  private readonly locale: Locale;
 
   constructor(
     private readonly adapter: ChannelAdapter,
@@ -550,6 +553,11 @@ class ChannelTurnRelay {
     private readonly options: TurnRelayOptions = {},
   ) {
     this.animationEnabled = !looksLikeSlashCommand(inbound.text);
+    this.locale = options.locale ?? DEFAULT_LOCALE;
+  }
+
+  private get t() {
+    return getMessages(this.locale);
   }
 
   async onEvent(event: AgentEvent): Promise<void> {
@@ -571,7 +579,7 @@ class ChannelTurnRelay {
         return;
       case "error":
         this.enqueueProgressWork(async () => {
-          await this.sendProgress(`任务执行出错：${event.error}`);
+          await this.sendProgress(this.t.taskError(event.error));
         });
         return;
       case "result":
@@ -613,7 +621,7 @@ class ChannelTurnRelay {
 
     const chunks = splitOutboundText(fullText || result.finalText, maxChars);
     if (chunks.length === 0) {
-      await this.sendText("暂无可读结果，请重试。", undefined, "final.empty_fallback");
+      await this.sendText(this.t.noReadableResult, undefined, "final.empty_fallback");
       return;
     }
 
@@ -667,7 +675,7 @@ class ChannelTurnRelay {
       fileName: `opencarapace-full-response-${Date.now()}.txt`,
       content: fullText,
       mimeType: "text/plain; charset=utf-8",
-      caption: "完整版回复（文本附件）",
+      caption: this.t.fullResponseCaption,
     };
     if (this.inbound.accountId) {
       attachment.accountId = this.inbound.accountId;
@@ -762,7 +770,7 @@ class ChannelTurnRelay {
       this.options.deltaPreviewMaxChars ?? DEFAULT_DELTA_PREVIEW_MAX_CHARS;
     const preview = clipText(this.deltaBuffer, maxChars);
     this.deltaBuffer = "";
-    await this.sendProgress(`处理中：${preview}`);
+    await this.sendProgress(this.t.processing(preview));
   }
 
   private async sendProgress(text: string): Promise<void> {
@@ -1024,6 +1032,7 @@ export type ChannelGatewayDeps = {
   registry?: ChannelRegistry;
   routing: ChannelAgentRouting;
   projectRootDir?: string;
+  locale?: Locale;
 };
 
 export class ChannelGateway {
@@ -1057,6 +1066,7 @@ export class ChannelGateway {
   private readonly activeSessionIds = new Set<string>();
   private stopping = false;
   private readonly projectRootDir: string | undefined;
+  private readonly locale: Locale;
 
   constructor(deps: ChannelGatewayDeps) {
     this.orchestrator = deps.orchestrator;
@@ -1065,6 +1075,11 @@ export class ChannelGateway {
     this.projectRootDir = deps.projectRootDir?.trim()
       ? path.resolve(deps.projectRootDir.trim())
       : undefined;
+    this.locale = deps.locale ?? DEFAULT_LOCALE;
+  }
+
+  private get t() {
+    return getMessages(this.locale);
   }
 
   registerChannel(adapter: ChannelAdapter): this {
@@ -1210,7 +1225,7 @@ export class ChannelGateway {
         await this.sendAuxiliaryMessage(
           channel,
           message,
-          "已定位当前 running 消息。",
+          this.t.locatedRunningMessage,
           runningProgressMessageId,
         );
         return this.emptyTurnResult(agentId, sessionId);
@@ -1225,7 +1240,7 @@ export class ChannelGateway {
       return this.emptyTurnResult(agentId, sessionId);
     }
 
-    const relay = new ChannelTurnRelay(channel, message, sessionId);
+    const relay = new ChannelTurnRelay(channel, message, sessionId, { locale: this.locale });
     this.activeRelays.add(relay);
     this.activeSessionIds.add(sessionId);
     const steerTriggered =
@@ -1368,7 +1383,7 @@ export class ChannelGateway {
       const failure: ChannelOutboundMessage = {
         channelId: channel.id,
         chatId: message.chatId,
-        text: `任务执行失败：${reason}`,
+        text: this.t.taskFailed(reason),
       };
       if (message.accountId) {
         failure.accountId = message.accountId;
@@ -1403,7 +1418,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "当前没有待决策的新消息，请直接发送新消息。",
+        this.t.noPendingDecision,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1412,7 +1427,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个选项已过期，请按最新提示选择。",
+        this.t.decisionExpired,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1430,7 +1445,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "已选择 1. steer：正在中断当前任务并切换到新消息。",
+        this.t.steerSelected,
       );
       return await this.handleInbound(replay);
     }
@@ -1462,7 +1477,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个会话选项已过期，请重新执行 /sessions。",
+        this.t.sessionOptionExpired,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1476,7 +1491,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个会话选项不属于当前对话，请重新执行 /sessions。",
+        this.t.sessionOptionWrongConversation,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1500,7 +1515,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "会话选择无效，请重新执行 /sessions。",
+        this.t.sessionSelectionInvalid,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1530,7 +1545,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个重命名选项已过期，请重新执行 /rename。",
+        this.t.renameOptionExpired,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1544,7 +1559,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个重命名选项不属于当前对话，请重新执行 /rename。",
+        this.t.renameOptionWrongConversation,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1560,9 +1575,9 @@ export class ChannelGateway {
       params.channel,
       params.message,
       [
-        `已选择会话：${clipSessionDisplayName(pending.sessionName, 48)}`,
-        "请直接发送新的 session 名称。",
-        "发送 /cancel 可取消。",
+        this.t.sessionSelected(clipSessionDisplayName(pending.sessionName, 48)),
+        this.t.sessionSendNewName,
+        this.t.sessionSendCancel,
       ].join("\n"),
     );
     return this.emptyTurnResult(params.agentId, params.sessionId);
@@ -1587,7 +1602,7 @@ export class ChannelGateway {
         await this.sendAuxiliaryMessage(
           params.channel,
           params.message,
-          "已取消当前输入操作。",
+          this.t.inputCancelled,
         );
         return this.emptyTurnResult(params.agentId, params.sessionId);
       }
@@ -1600,8 +1615,8 @@ export class ChannelGateway {
         params.channel,
         params.message,
         pending.kind === "rename-session"
-          ? "名称不能为空，请重新发送新的 session 名称。"
-          : "project 名称不能为空，请重新发送。",
+          ? this.t.renameNameEmpty
+          : this.t.projectNameEmpty,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1641,7 +1656,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "名称无效，请重新发送新的 session 名称。",
+        this.t.renameNameInvalid,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1652,7 +1667,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "目标 session 不存在，请重新执行 /rename。",
+        this.t.renameTargetMissing,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1665,11 +1680,10 @@ export class ChannelGateway {
     await this.sendAuxiliaryMessage(
       params.channel,
       params.message,
-      [
-        "session 已重命名。",
-        `- from: ${clipSessionDisplayName(params.pending.previousName, 48)}`,
-        `- to: ${clipSessionDisplayName(normalizedName, 48)}`,
-      ].join("\n"),
+      this.t.renameSuccess(
+        clipSessionDisplayName(params.pending.previousName, 48),
+        clipSessionDisplayName(normalizedName, 48),
+      ),
     );
     return this.emptyTurnResult(params.agentId, params.sessionId);
   }
@@ -1687,7 +1701,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "未配置 project root，请先执行 `opencarapace config tui` 设置 runtime.project_root_dir。",
+        this.t.projectRootNotConfigured,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1697,7 +1711,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "project 名称无效，不能包含 / 或 \\，且不能是 . 或 ..。",
+        this.t.projectNameInvalid,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1708,7 +1722,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "project 名称无效，请更换名称后重试。",
+        this.t.projectNameTraversal,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1717,7 +1731,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        `project 已存在：${projectName}，请换一个名称。`,
+        this.t.projectAlreadyExists(projectName),
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1728,7 +1742,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        `新建 project 失败：${error instanceof Error ? error.message : String(error)}`,
+        this.t.projectCreateFailed(error instanceof Error ? error.message : String(error)),
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1740,7 +1754,7 @@ export class ChannelGateway {
     await this.sendAuxiliaryMessage(
       params.channel,
       params.message,
-      `已新建并切换 project：${projectName}\n后续新对话将绑定到该 project。`,
+      this.t.projectCreated(projectName),
     );
     return this.emptyTurnResult(params.agentId, params.sessionId);
   }
@@ -1759,7 +1773,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个项目选项已过期，请重新执行 /project。",
+        this.t.projectOptionExpired,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1773,7 +1787,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "这个项目选项不属于当前对话，请重新执行 /project。",
+        this.t.projectOptionWrongConversation,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1801,8 +1815,8 @@ export class ChannelGateway {
         params.channel,
         params.message,
         [
-          "请直接发送新 project 名称。",
-          "发送 /cancel 可取消。",
+          this.t.projectSendNewName,
+          this.t.projectSendCancel,
         ].join("\n"),
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
@@ -1813,7 +1827,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         params.channel,
         params.message,
-        "项目选择无效，请重新执行 /project。",
+        this.t.projectSelectionInvalid,
       );
       return this.emptyTurnResult(params.agentId, params.sessionId);
     }
@@ -1824,7 +1838,7 @@ export class ChannelGateway {
     await this.sendAuxiliaryMessage(
       params.channel,
       params.message,
-      `已切换 project：${projectName}\n后续新对话将绑定到该 project。`,
+      this.t.projectSwitched(projectName),
     );
     return this.emptyTurnResult(params.agentId, params.sessionId);
   }
@@ -1847,16 +1861,16 @@ export class ChannelGateway {
       chatId: inbound.chatId,
       text: isTelegram
         ? [
-            "<b>检测到你发送了新消息</b>",
-            "当前任务仍在运行，请选择处理方式：",
-            "1. <b>steer</b>：中断当前任务并切换到新消息",
-            "2. <b>stack</b>：保持当前任务，新消息进入队列",
+            this.t.turnDecisionHeadingHtml,
+            this.t.turnDecisionBody,
+            this.t.turnDecisionSteerHtml,
+            this.t.turnDecisionStackHtml,
           ].join("\n")
         : [
-            "检测到你发送了新消息",
-            "当前任务仍在运行，请选择处理方式：",
-            "1. steer：中断当前任务并切换到新消息",
-            "2. stack：保持当前任务，新消息进入队列",
+            this.t.turnDecisionHeading,
+            this.t.turnDecisionBody,
+            this.t.turnDecisionSteer,
+            this.t.turnDecisionStack,
           ].join("\n"),
       metadata: isTelegram
         ? {
@@ -2011,7 +2025,7 @@ export class ChannelGateway {
       const callbackData = buildTelegramSessionPickCallbackData(token);
       if (callbackData) {
         navRow.push({
-          text: "◀ 上一页",
+          text: this.t.prevPage,
           callback_data: callbackData,
         });
       }
@@ -2034,7 +2048,7 @@ export class ChannelGateway {
       const callbackData = buildTelegramSessionPickCallbackData(token);
       if (callbackData) {
         navRow.push({
-          text: safePage === 0 ? "更多 ▶" : "下一页 ▶",
+          text: safePage === 0 ? this.t.morePage : this.t.nextPage,
           callback_data: callbackData,
         });
       }
@@ -2052,9 +2066,8 @@ export class ChannelGateway {
       channelId: channel.id,
       chatId: inbound.chatId,
       text: [
-        `当前 project：${decodeChannelSessionProjectKey(projectKey)}`,
+        this.t.sessionPickerHeader(decodeChannelSessionProjectKey(projectKey)),
         `Sessions ${start + 1}-${end}/${sessions.length}（Top ${TELEGRAM_SESSION_PICK_PAGE_SIZE}）`,
-        "点击会话可查看该会话名称和最近 20 条 history：",
       ].join("\n"),
       metadata: {
         telegram_reply_markup: {
@@ -2088,7 +2101,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         channel,
         inbound,
-        "当前 project 暂无可重命名会话，请先发送消息创建会话。",
+        this.t.noRenamableSessions,
       );
       return;
     }
@@ -2127,8 +2140,8 @@ export class ChannelGateway {
     }
 
     const baseText = [
-      `当前 project：${decodeChannelSessionProjectKey(projectKey)}`,
-      "点击会话后发送新名称：",
+      this.t.currentProject(decodeChannelSessionProjectKey(projectKey)),
+      this.t.renamePickerHeader,
     ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -2174,7 +2187,7 @@ export class ChannelGateway {
     const baseText = [
       "Sandbox mode (workspace)",
       `- current: ${currentMode}`,
-      "点击按钮直接切换：",
+      this.t.sandboxPickerHeader,
     ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -2241,7 +2254,7 @@ export class ChannelGateway {
     const baseText = [
       "Model preference (global)",
       `- current: ${currentModel}`,
-      "点击按钮设置模型：",
+      this.t.modelPickerHeader,
     ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -2308,7 +2321,7 @@ export class ChannelGateway {
     const baseText = [
       "Thinking depth preference (global)",
       `- current: ${currentDepth}`,
-      "点击按钮设置深度：",
+      this.t.depthPickerHeader,
     ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -2364,7 +2377,7 @@ export class ChannelGateway {
       await this.sendAuxiliaryMessage(
         channel,
         inbound,
-        "未配置 project root，请先执行 `opencarapace config tui` 设置 runtime.project_root_dir。",
+        this.t.projectRootNotConfigured,
       );
       return;
     }
@@ -2427,7 +2440,7 @@ export class ChannelGateway {
       const callbackData = buildTelegramProjectPickCallbackData(token);
       if (callbackData) {
         navRow.push({
-          text: "◀ 上一页",
+          text: this.t.prevPage,
           callback_data: callbackData,
         });
       }
@@ -2449,7 +2462,7 @@ export class ChannelGateway {
       const callbackData = buildTelegramProjectPickCallbackData(token);
       if (callbackData) {
         navRow.push({
-          text: safePage === 0 ? "更多 ▶" : "下一页 ▶",
+          text: safePage === 0 ? this.t.morePage : this.t.nextPage,
           callback_data: callbackData,
         });
       }
@@ -2474,7 +2487,7 @@ export class ChannelGateway {
     if (createCallback) {
       rows.push([
         {
-          text: "➕ 新建 project",
+          text: this.t.createProject,
           callback_data: createCallback,
         },
       ]);
@@ -2489,15 +2502,13 @@ export class ChannelGateway {
       projects.length > 0
         ? `Projects ${start + 1}-${end}/${projects.length}（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`
         : `Projects 0/0（Top ${TELEGRAM_PROJECT_PICK_PAGE_SIZE}）`;
-    const actionLine =
-      projects.length > 0
-        ? "点击项目可切换，列表按最近使用时间排序；底部按钮可新建项目。"
-        : "当前还没有可选项目，点击底部按钮新建。";
     const baseText = [
       `Project root：${this.projectRootDir}`,
-      `当前 project：${decodeChannelSessionProjectKey(currentProjectKey)}`,
       projectsLine,
-      actionLine,
+      this.t.projectPickerHeader(
+        decodeChannelSessionProjectKey(currentProjectKey),
+        projects.length > 0,
+      ),
     ].join("\n");
     const outbound: ChannelOutboundMessage = {
       channelId: channel.id,
@@ -2754,8 +2765,7 @@ export class ChannelGateway {
   private formatStackQueueMessage(queuePreviews: string[]): string {
     const rows = queuePreviews.map((item, index) => `${index + 1}. ${item}`);
     return [
-      "已选择 2. stack：新消息已进入队列。",
-      "当前队列（按顺序）：",
+      this.t.stackQueueHeader,
       ...rows,
     ].join("\n");
   }

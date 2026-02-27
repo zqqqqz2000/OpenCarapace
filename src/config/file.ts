@@ -88,6 +88,7 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
       project_root_dir: path.resolve(os.homedir(), "Documents"),
       port: 3000,
       gateway_port: 3010,
+      language: "en",
     },
     agents: {
       codex: {

@@ -15,7 +15,6 @@ Channel-first orchestration for code agents on Bun.
 
 ```bash
 bun install
-bun run opencarapace config init
 bun run opencarapace config tui
 ```
 

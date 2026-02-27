@@ -13,6 +13,7 @@ export type OpenCarapaceConfig = {
     project_root_dir?: string;
     port?: number;
     gateway_port?: number;
+    language?: string;
   };
   agents?: {
     codex?: {
