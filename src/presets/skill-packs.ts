@@ -10,10 +10,83 @@ import {
 } from "../integrations/openclaw-skills.js";
 
 export type SkillPresetResult = {
-  memoryBank: InMemoryMemoryBank;
-  memorySkill: MemorySkill;
+  memoryBank: InMemoryMemoryBank | null;
+  memorySkill: MemorySkill | null;
   openClawSkill: OpenClawCatalogSkill | null;
 };
+
+function normalizeStringList(items: string[] | undefined): string[] {
+  if (!items || items.length === 0) {
+    return [];
+  }
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
+}
+
+function resolveSkillPaths(config?: OpenCarapaceConfig): string[] {
+  const configured = normalizeStringList(config?.skills?.paths);
+  if (configured.length > 0) {
+    return configured;
+  }
+  return [".opencarapace/skills"];
+}
+
+function resolveSkillsLoadMode(config?: OpenCarapaceConfig): "lazy" | "eager" {
+  return config?.skills?.load_mode === "eager" ? "eager" : "lazy";
+}
+
+function resolveSkillsReloadMode(config?: OpenCarapaceConfig): "on_change" | "always" {
+  return config?.skills?.reload === "always" ? "always" : "on_change";
+}
+
+function resolveMemoryMode(config?: OpenCarapaceConfig): "off" | "project" | "global" | "hybrid" {
+  const mode = config?.memory?.mode;
+  if (mode === "off" || mode === "project" || mode === "global" || mode === "hybrid") {
+    return mode;
+  }
+  return "project";
+}
+
+function buildDirectorySkillProtocolInstruction(config?: OpenCarapaceConfig): string {
+  const roots = resolveSkillPaths(config);
+  const loadMode = resolveSkillsLoadMode(config);
+  const reloadMode = resolveSkillsReloadMode(config);
+  return [
+    `Skill协议: roots=${roots.join(", ")}; load=${loadMode}; reload=${reloadMode}.`,
+    "先读SKILL.md摘要，再按任务只读取相关skill全文。",
+    "避免加载无关skill。",
+  ].join("\n");
+}
+
+function buildFileMemoryProtocolInstruction(config?: OpenCarapaceConfig): string {
+  const enabled = config?.memory?.enabled ?? true;
+  if (!enabled) {
+    return "Memory协议: memory=off，当前回合不读写memory目录。";
+  }
+
+  const mode = resolveMemoryMode(config);
+  const projectRoot = config?.memory?.project_root?.trim() || ".opencarapace/memory/projects";
+  const globalRoot = config?.memory?.global_root?.trim() || "~/.config/opencarapace/memory/global";
+
+  const modeRule = (() => {
+    if (mode === "off") {
+      return "- 作用域：off（不读不写）。";
+    }
+    if (mode === "project") {
+      return "- 作用域：project（仅项目记忆）。";
+    }
+    if (mode === "global") {
+      return "- 作用域：global（全局共享记忆）。";
+    }
+    return "- 作用域：hybrid（读取 project+global，默认写 project）。";
+  })();
+
+  return [
+    "Memory协议: 记忆是文件，不使用memory专用工具。",
+    modeRule,
+    `路径: project=${projectRoot}; global=${globalRoot}`,
+    "需要历史时先读目录；仅写稳定且已确认、可复用信息；临时猜测不写。",
+  ].join("\n");
+}
 
 function resolveOpenClawRoots(config?: OpenCarapaceConfig): string[] | undefined {
   const roots = [] as string[];
@@ -38,9 +111,32 @@ export function registerDefaultSkills(
     config?: OpenCarapaceConfig;
   },
 ): SkillPresetResult {
-  const memoryBank = new InMemoryMemoryBank();
-  const memorySkill = new MemorySkill(memoryBank, { appliesTo: "*" });
-  runtime.register(memorySkill);
+  const legacySessionMemoryEnabled = options?.config?.memory?.legacy_session_skill === true;
+  const memoryBank = legacySessionMemoryEnabled ? new InMemoryMemoryBank() : null;
+  const memorySkill = memoryBank
+    ? new MemorySkill(memoryBank, { appliesTo: "*" })
+    : null;
+  if (memorySkill) {
+    runtime.register(memorySkill);
+  }
+
+  runtime.register(
+    new InstructionSkill({
+      id: "core.skills.directory.protocol",
+      description: "Load skills from configured directories via scan+match protocol.",
+      appliesTo: "*",
+      instruction: buildDirectorySkillProtocolInstruction(options?.config),
+    }),
+  );
+
+  runtime.register(
+    new InstructionSkill({
+      id: "core.memory.file.protocol",
+      description: "Use file-only memory policy and scope rules.",
+      appliesTo: "*",
+      instruction: buildFileMemoryProtocolInstruction(options?.config),
+    }),
+  );
 
   runtime.register(
     new InstructionSkill({

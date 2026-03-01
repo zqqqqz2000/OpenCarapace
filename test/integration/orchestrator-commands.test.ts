@@ -46,7 +46,7 @@ describe("ChatOrchestrator commands", () => {
   });
 
   test("supports /memory show and /memory clear", async () => {
-    const orchestrator = createDeterministicOrchestrator();
+    const orchestrator = createDeterministicOrchestrator({ legacySessionMemory: true });
 
     await orchestrator.chat({
       agentId: "codex",
@@ -71,6 +71,15 @@ describe("ChatOrchestrator commands", () => {
       input: "/memory show 1",
     });
     expect(empty.finalText).toContain("Memory is empty");
+  });
+
+  test("reports legacy memory disabled by default", async () => {
+    const orchestrator = createDeterministicOrchestrator();
+    const shown = await orchestrator.chat({
+      sessionId: "cmd-memory-disabled-1",
+      input: "/memory show 1",
+    });
+    expect(shown.finalText).toContain("Legacy memory skill is disabled");
   });
 
   test("supports /tools and /grep commands", async () => {

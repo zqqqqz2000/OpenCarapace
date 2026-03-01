@@ -575,8 +575,8 @@ export class ConversationCommandService {
       "- /tool <name> [...args]: run tool by name (grep/skill)",
       '- /grep "<pattern>" [--path <dir-or-file>] [--limit <n>]: workspace text search',
       "- /skill [keywords|show <id>]: search/list OpenClaw skills",
-      "- /memory [show|clear] [n]: inspect or clear memory entries",
-      "- /forget: alias of /memory clear",
+      "- /memory [show|clear] [n]: inspect/clear legacy in-process memory (optional)",
+      "- /forget: alias of /memory clear (legacy mode)",
       "- /commands or /command help: show this list",
     ].join("\n");
   }
@@ -1154,7 +1154,8 @@ export class ConversationCommandService {
     if (!memory) {
       return {
         handled: true,
-        finalText: "Memory skill is not enabled.",
+        finalText:
+          "Legacy memory skill is disabled. Set `memory.legacy_session_skill = true` to enable /memory show|clear.",
         agentId: currentAgentId,
       };
     }
@@ -1176,7 +1177,8 @@ export class ConversationCommandService {
     if (!memory) {
       return {
         handled: true,
-        finalText: "Memory skill is not enabled.",
+        finalText:
+          "Legacy memory skill is disabled. Set `memory.legacy_session_skill = true` to enable /memory show|clear.",
         agentId: currentAgentId,
       };
     }

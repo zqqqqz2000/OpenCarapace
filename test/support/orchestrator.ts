@@ -11,7 +11,9 @@ import { ReadabilityPolicy } from "../../src/core/ux-policy.js";
 import { registerDefaultSkills } from "../../src/presets/skill-packs.js";
 import { registerDefaultTools } from "../../src/presets/tool-packs.js";
 
-export function createDeterministicOrchestrator(): ChatOrchestrator {
+export function createDeterministicOrchestrator(params?: {
+  legacySessionMemory?: boolean;
+}): ChatOrchestrator {
   const registry = new AgentRegistry();
   const hooks = new HookBus();
   const skills = new SkillRuntime();
@@ -31,7 +33,13 @@ export function createDeterministicOrchestrator(): ChatOrchestrator {
     ),
   );
 
-  const skillPreset = registerDefaultSkills(skills);
+  const skillPreset = registerDefaultSkills(skills, {
+    config: {
+      memory: {
+        legacy_session_skill: params?.legacySessionMemory === true,
+      },
+    },
+  });
   registerDefaultTools(tools, {
     workspaceRoot: process.cwd(),
     openClawSkill: skillPreset.openClawSkill,

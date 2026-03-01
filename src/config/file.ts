@@ -118,6 +118,16 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
     },
     skills: {
       enable_openclaw_catalog: true,
+      paths: [".opencarapace/skills"],
+      load_mode: "lazy",
+      reload: "on_change",
+    },
+    memory: {
+      enabled: true,
+      mode: "project",
+      project_root: ".opencarapace/memory/projects",
+      global_root: "~/.config/opencarapace/memory/global",
+      legacy_session_skill: false,
     },
   };
 }

@@ -6,6 +6,10 @@ export type OpenCarapaceBridgeChannelConfig = {
   outbound_webhook_url_file?: string;
 };
 
+export type OpenCarapaceMemoryMode = "off" | "project" | "global" | "hybrid";
+export type OpenCarapaceSkillsLoadMode = "lazy" | "eager";
+export type OpenCarapaceSkillsReloadMode = "on_change" | "always";
+
 export type OpenCarapaceConfig = {
   runtime?: {
     default_agent_id?: string;
@@ -52,5 +56,15 @@ export type OpenCarapaceConfig = {
     openclaw_skill_dirs?: string[];
     openclaw_max_selected_skills?: number;
     openclaw_max_snippet_chars?: number;
+    paths?: string[];
+    load_mode?: OpenCarapaceSkillsLoadMode;
+    reload?: OpenCarapaceSkillsReloadMode;
+  };
+  memory?: {
+    enabled?: boolean;
+    mode?: OpenCarapaceMemoryMode;
+    project_root?: string;
+    global_root?: string;
+    legacy_session_skill?: boolean;
   };
 };
