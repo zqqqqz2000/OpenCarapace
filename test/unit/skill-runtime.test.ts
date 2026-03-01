@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { SkillRuntime, InstructionSkill } from "../../src/core/skills.js";
-import { MemorySkill, InMemoryMemoryBank } from "../../src/core/memory-skill.js";
 import type { AgentTurnRequest } from "../../src/core/types.js";
 
 function request(prompt: string): AgentTurnRequest {
@@ -39,20 +38,6 @@ describe("SkillRuntime", () => {
 
     const patch = await runtime.runBeforeTurn(skills, request("hello"));
     expect(patch.systemDirectives).toContain("for codex only");
-  });
-
-  test("memory skill injects relevant memory", () => {
-    const bank = new InMemoryMemoryBank();
-    bank.append({
-      sessionId: "session-1",
-      at: Date.now(),
-      userText: "修复登录超时",
-      assistantText: "已调整 token 校验与重试",
-    });
-
-    const skill = new MemorySkill(bank);
-    const patch = skill.beforeTurn({ request: request("登录超时问题还在吗") });
-    expect(patch?.systemDirectives?.join("\n")).toContain("修复登录超时");
   });
 
   test("rejects invalid skill id and duplicate ids", () => {

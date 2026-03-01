@@ -4,7 +4,7 @@ import { assertInjectableId, isInjectableId } from "../../src/core/naming.js";
 describe("injectable naming", () => {
   test("accepts vendor.scope.capability style ids", () => {
     expect(isInjectableId("codex.progress.notifier")).toBeTrue();
-    expect(isInjectableId("core.memory.session")).toBeTrue();
+    expect(isInjectableId("core.memory.file.protocol")).toBeTrue();
     expect(isInjectableId("vendor.domain.feature.alpha")).toBeTrue();
   });
 

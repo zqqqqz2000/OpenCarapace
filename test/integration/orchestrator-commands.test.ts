@@ -45,41 +45,13 @@ describe("ChatOrchestrator commands", () => {
     expect(session?.messages.length).toBe(2);
   });
 
-  test("supports /memory show and /memory clear", async () => {
-    const orchestrator = createDeterministicOrchestrator({ legacySessionMemory: true });
-
-    await orchestrator.chat({
-      agentId: "codex",
-      sessionId: "cmd-memory-1",
-      input: "请给我一个关于登录超时的简短建议。",
-    });
-
-    const shown = await orchestrator.chat({
-      sessionId: "cmd-memory-1",
-      input: "/memory show 1",
-    });
-    expect(shown.finalText).toContain("Memory (latest 1)");
-
-    const cleared = await orchestrator.chat({
-      sessionId: "cmd-memory-1",
-      input: "/memory clear",
-    });
-    expect(cleared.finalText).toContain("Memory cleared");
-
-    const empty = await orchestrator.chat({
-      sessionId: "cmd-memory-1",
-      input: "/memory show 1",
-    });
-    expect(empty.finalText).toContain("Memory is empty");
-  });
-
-  test("reports legacy memory disabled by default", async () => {
+  test("reports /memory command is removed", async () => {
     const orchestrator = createDeterministicOrchestrator();
     const shown = await orchestrator.chat({
-      sessionId: "cmd-memory-disabled-1",
+      sessionId: "cmd-memory-removed-1",
       input: "/memory show 1",
     });
-    expect(shown.finalText).toContain("Legacy memory skill is disabled");
+    expect(shown.finalText).toContain("Unknown command: /memory");
   });
 
   test("supports /tools and /grep commands", async () => {

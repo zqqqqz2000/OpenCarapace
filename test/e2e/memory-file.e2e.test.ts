@@ -81,8 +81,8 @@ function resolvePaths(directives: string): { projectRoot: string; globalRoot: st
     };
   }
   return {
-    projectRoot: match[1].trim(),
-    globalRoot: match[2].trim(),
+    projectRoot: (match[1] ?? ".opencarapace/memory/projects").trim(),
+    globalRoot: (match[2] ?? "~/.config/opencarapace/memory/global").trim(),
   };
 }
 
@@ -209,7 +209,6 @@ function createMemoryE2EOrchestrator(params: {
       mode: params.mode,
       project_root: params.projectRoot,
       global_root: params.globalRoot,
-      legacy_session_skill: false,
     },
   };
   const skillPreset = registerDefaultSkills(skills, { config });
@@ -282,7 +281,11 @@ describe("E2E file-memory protocol", () => {
     expect(secondDirectives.some((line) => line.includes("Memory协议:"))).toBeTrue();
     expect(skillDirective.length).toBeLessThanOrEqual(220);
     expect(memoryDirective.split("\n").length).toBeLessThanOrEqual(4);
+    expect(memoryDirective).toContain("由LLM通过skill主动读写");
     expect(memoryDirective).toContain("路径:");
+    expect(memoryDirective).toContain("core");
+    expect(memoryDirective).toContain("daily");
+    expect(memoryDirective).toContain("先读目录再读core");
     expect(memoryDirective).toContain("仅写稳定且已确认");
   });
 

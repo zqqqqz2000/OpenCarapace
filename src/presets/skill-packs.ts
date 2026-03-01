@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { SkillRuntime } from "../core/skills.js";
 import { InstructionSkill } from "../core/skills.js";
-import { InMemoryMemoryBank, MemorySkill } from "../core/memory-skill.js";
 import type { OpenCarapaceConfig } from "../config/types.js";
 import { expandHomePath } from "../config/path.js";
 import {
@@ -10,8 +9,6 @@ import {
 } from "../integrations/openclaw-skills.js";
 
 export type SkillPresetResult = {
-  memoryBank: InMemoryMemoryBank | null;
-  memorySkill: MemorySkill | null;
   openClawSkill: OpenClawCatalogSkill | null;
 };
 
@@ -81,10 +78,10 @@ function buildFileMemoryProtocolInstruction(config?: OpenCarapaceConfig): string
   })();
 
   return [
-    "Memory协议: 记忆是文件，不使用memory专用工具。",
+    "Memory协议: 记忆是文件，由LLM通过skill主动读写，不使用memory专用工具。",
     modeRule,
     `路径: project=${projectRoot}; global=${globalRoot}`,
-    "需要历史时先读目录；仅写稳定且已确认、可复用信息；临时猜测不写。",
+    "分层+流程: core(稳定事实/偏好/决策)+daily(当日上下文)；需要历史时先读目录再读core，必要时再读daily；写入时稳定信息写core、过程性信息写daily；仅写稳定且已确认、可复用信息，临时猜测不写。",
   ].join("\n");
 }
 
@@ -111,15 +108,6 @@ export function registerDefaultSkills(
     config?: OpenCarapaceConfig;
   },
 ): SkillPresetResult {
-  const legacySessionMemoryEnabled = options?.config?.memory?.legacy_session_skill === true;
-  const memoryBank = legacySessionMemoryEnabled ? new InMemoryMemoryBank() : null;
-  const memorySkill = memoryBank
-    ? new MemorySkill(memoryBank, { appliesTo: "*" })
-    : null;
-  if (memorySkill) {
-    runtime.register(memorySkill);
-  }
-
   runtime.register(
     new InstructionSkill({
       id: "core.skills.directory.protocol",
@@ -206,8 +194,6 @@ export function registerDefaultSkills(
   }
 
   return {
-    memoryBank,
-    memorySkill,
     openClawSkill,
   };
 }

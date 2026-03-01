@@ -6,7 +6,6 @@ import {
   decodeChannelSessionProjectKey,
   parseChannelSessionId,
 } from "../channels/session-key.js";
-import { MemorySkill } from "./memory-skill.js";
 import { buildFallbackSessionTitle } from "./session-title.js";
 import type { SessionManager, SessionRecord } from "./session.js";
 import type { SkillRuntime } from "./skills.js";
@@ -537,12 +536,6 @@ export class ConversationCommandService {
       case "skill": {
         return this.runToolCommand(params, "skill", args);
       }
-      case "memory": {
-        return this.memoryText(params.sessionId, params.currentAgentId, args);
-      }
-      case "forget": {
-        return this.memoryClearText(params.sessionId, params.currentAgentId);
-      }
       default:
         return {
           handled: true,
@@ -575,8 +568,6 @@ export class ConversationCommandService {
       "- /tool <name> [...args]: run tool by name (grep/skill)",
       '- /grep "<pattern>" [--path <dir-or-file>] [--limit <n>]: workspace text search',
       "- /skill [keywords|show <id>]: search/list OpenClaw skills",
-      "- /memory [show|clear] [n]: inspect/clear legacy in-process memory (optional)",
-      "- /forget: alias of /memory clear (legacy mode)",
       "- /commands or /command help: show this list",
     ].join("\n");
   }
@@ -1057,10 +1048,6 @@ export class ConversationCommandService {
     return [`Skills for ${agentId}`, ...lines].join("\n");
   }
 
-  private getMemorySkill(): MemorySkill | undefined {
-    return this.deps.skills.listAll().find((skill): skill is MemorySkill => skill instanceof MemorySkill);
-  }
-
   private getOpenClawSkill(): OpenClawCatalogSkill | undefined {
     return this.deps.skills
       .listAll()
@@ -1147,71 +1134,5 @@ export class ConversationCommandService {
 
     const lines = docs.slice(0, limit).map((doc, index) => `${index + 1}. ${doc.name} - ${doc.summary}`);
     return [`OpenClaw skills (${docs.length})`, ...lines].join("\n");
-  }
-
-  private memoryClearText(sessionId: string, currentAgentId: AgentId): CommandExecutionResult {
-    const memory = this.getMemorySkill();
-    if (!memory) {
-      return {
-        handled: true,
-        finalText:
-          "Legacy memory skill is disabled. Set `memory.legacy_session_skill = true` to enable /memory show|clear.",
-        agentId: currentAgentId,
-      };
-    }
-
-    memory.clearSession(sessionId);
-    return {
-      handled: true,
-      finalText: `Memory cleared for session ${sessionId}.`,
-      agentId: currentAgentId,
-    };
-  }
-
-  private memoryText(
-    sessionId: string,
-    currentAgentId: AgentId,
-    args: string[],
-  ): CommandExecutionResult {
-    const memory = this.getMemorySkill();
-    if (!memory) {
-      return {
-        handled: true,
-        finalText:
-          "Legacy memory skill is disabled. Set `memory.legacy_session_skill = true` to enable /memory show|clear.",
-        agentId: currentAgentId,
-      };
-    }
-
-    const action = args[0]?.toLowerCase();
-    if (action === "clear") {
-      return this.memoryClearText(sessionId, currentAgentId);
-    }
-
-    const limitArg = action === "show" ? args[1] : args[0];
-    const limit = parseNumber(limitArg, 8, 1, 30);
-    const entries = memory.dumpSession(sessionId, limit);
-
-    if (entries.length === 0) {
-      return {
-        handled: true,
-        finalText: "Memory is empty for current session.",
-        agentId: currentAgentId,
-      };
-    }
-
-    const lines = entries.map((entry, index) => {
-      return [
-        `${index + 1}. ${new Date(entry.at).toISOString()}`,
-        `   user: ${entry.userText}`,
-        `   assistant: ${entry.assistantText}`,
-      ].join("\n");
-    });
-
-    return {
-      handled: true,
-      finalText: [`Memory (latest ${entries.length})`, ...lines].join("\n"),
-      agentId: currentAgentId,
-    };
   }
 }

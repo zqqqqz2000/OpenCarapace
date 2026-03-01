@@ -12,7 +12,7 @@ import { registerDefaultSkills } from "../../src/presets/skill-packs.js";
 import { registerDefaultTools } from "../../src/presets/tool-packs.js";
 
 export function createDeterministicOrchestrator(params?: {
-  legacySessionMemory?: boolean;
+  memoryMode?: "off" | "project" | "global" | "hybrid";
 }): ChatOrchestrator {
   const registry = new AgentRegistry();
   const hooks = new HookBus();
@@ -36,7 +36,8 @@ export function createDeterministicOrchestrator(params?: {
   const skillPreset = registerDefaultSkills(skills, {
     config: {
       memory: {
-        legacy_session_skill: params?.legacySessionMemory === true,
+        enabled: true,
+        mode: params?.memoryMode ?? "project",
       },
     },
   });

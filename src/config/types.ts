@@ -65,6 +65,5 @@ export type OpenCarapaceConfig = {
     mode?: OpenCarapaceMemoryMode;
     project_root?: string;
     global_root?: string;
-    legacy_session_skill?: boolean;
   };
 };

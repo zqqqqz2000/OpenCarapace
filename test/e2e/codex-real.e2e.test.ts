@@ -69,17 +69,22 @@ describe("E2E real codex (optional)", () => {
     input: string;
     fixture?: MemoryFixture;
   }) {
-    const metadata = params.fixture
-      ? {
-          project_root_dir: params.fixture.baseDir,
-        }
-      : undefined;
-    return await params.orchestrator.chat({
+    const chatParams = {
       agentId: "codex",
       sessionId: params.sessionId,
       input: params.input,
-      metadata,
-    });
+    } as {
+      agentId: "codex";
+      sessionId: string;
+      input: string;
+      metadata?: Record<string, unknown>;
+    };
+    if (params.fixture) {
+      chatParams.metadata = {
+        project_root_dir: params.fixture.baseDir,
+      };
+    }
+    return await params.orchestrator.chat(chatParams);
   }
 
   async function ensureWritableSandbox(params: {
@@ -97,7 +102,6 @@ describe("E2E real codex (optional)", () => {
   }
 
   function createRealCodexOrchestrator(params?: {
-    legacySessionSkill?: boolean;
     memoryMode?: MemoryMode;
     projectRoot?: string;
     globalRoot?: string;
@@ -111,6 +115,22 @@ describe("E2E real codex (optional)", () => {
       .split(" ")
       .map((part) => part.trim())
       .filter(Boolean);
+
+    const memoryConfig = {
+      enabled: true,
+      mode: params?.memoryMode ?? "project",
+    } as {
+      enabled: true;
+      mode: MemoryMode;
+      project_root?: string;
+      global_root?: string;
+    };
+    if (params?.projectRoot) {
+      memoryConfig.project_root = params.projectRoot;
+    }
+    if (params?.globalRoot) {
+      memoryConfig.global_root = params.globalRoot;
+    }
 
     const config: OpenCarapaceConfig = {
       runtime: {
@@ -129,13 +149,7 @@ describe("E2E real codex (optional)", () => {
       skills: {
         enable_openclaw_catalog: false,
       },
-      memory: {
-        enabled: true,
-        mode: params?.memoryMode ?? "project",
-        project_root: params?.projectRoot,
-        global_root: params?.globalRoot,
-        legacy_session_skill: params?.legacySessionSkill === true,
-      },
+      memory: memoryConfig,
     };
     if (params?.workspaceRoot) {
       config.runtime = {
@@ -227,36 +241,6 @@ describe("E2E real codex (optional)", () => {
         "user",
         "assistant",
       ]);
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  runner(
-    "works with memory command after real codex turns",
-    async () => {
-      const orchestrator = createRealCodexOrchestrator({
-        legacySessionSkill: true,
-      });
-
-      await runCodexTurn({
-        orchestrator,
-        sessionId: "real-codex-e2e-memory",
-        input: "请给一条关于缓存击穿的简短处理建议。",
-      });
-      await runCodexTurn({
-        orchestrator,
-        sessionId: "real-codex-e2e-memory",
-        input: "补一条对应的监控建议。",
-      });
-
-      const memory = await runCodexTurn({
-        orchestrator,
-        sessionId: "real-codex-e2e-memory",
-        input: "/memory show 2",
-      });
-      expect(memory.finalText).toContain("Memory (latest");
-      expect(memory.finalText).toContain("user:");
-      expect(memory.finalText).toContain("assistant:");
     },
     TEST_TIMEOUT_MS,
   );

@@ -29,7 +29,6 @@ export * from "./core/naming.js";
 export * from "./core/session.js";
 export * from "./core/session-title.js";
 export * from "./core/skills.js";
-export * from "./core/memory-skill.js";
 export * from "./core/commands.js";
 export * from "./core/orchestrator.js";
 export * from "./core/tools.js";

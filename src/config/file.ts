@@ -127,7 +127,6 @@ export function defaultOpenCarapaceConfig(): OpenCarapaceConfig {
       mode: "project",
       project_root: ".opencarapace/memory/projects",
       global_root: "~/.config/opencarapace/memory/global",
-      legacy_session_skill: false,
     },
   };
 }

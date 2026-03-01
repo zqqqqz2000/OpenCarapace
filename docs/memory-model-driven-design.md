@@ -6,6 +6,7 @@
 
 - 记忆是文件（source of truth），
 - skill 是规则（告诉模型何时读写、读写哪些层级），
+- 记忆由 LLM 通过 skill 主动读写，
 - 不提供 memory 专用工具，
 - 不把 `/new` `/reset` 绑定到 memory 管理。
 
@@ -25,17 +26,20 @@
     <skill_name>/SKILL.md
   memory/
     global/
-      profile.md
-      preferences.md
-      principles.md
+      core/
+        profile.md
+        preferences.md
+        principles.md
+      daily/
+        2026-03-01.md
     projects/
       <project_id>/
-        index.md
-        context.md
-        decisions/
-        knowledge/
-        runbooks/
-        tasks/
+        core/
+          preferences.md
+          decisions.md
+          knowledge.md
+        daily/
+          2026-03-01.md
 ```
 
 默认全局目录也可放在 `~/.config/opencarapace/memory/global`。
@@ -53,7 +57,6 @@ enabled = true
 mode = "project"               # off|project|global|hybrid
 project_root = ".opencarapace/memory/projects"
 global_root = "~/.config/opencarapace/memory/global"
-legacy_session_skill = false   # 兼容旧 /memory show|clear
 ```
 
 ## 5. Skill Injection Contract
@@ -64,15 +67,21 @@ legacy_session_skill = false   # 兼容旧 /memory show|clear
   - 指定 skill 根目录与加载模式。
   - 规则：先扫描 `SKILL.md` 摘要，再按任务按需读取全文。
 - `core.memory.file.protocol`
-  - 声明 memory 目录、作用域和写入标准。
-  - 规则：只写稳定、可复用、已确认信息；不写临时猜测。
+  - 声明 memory 目录、作用域和分层（`core + daily`）。
+  - 规则：
+    - 记忆是文件，由 LLM 通过 skill 主动读写。
+    - 需要历史时先读目录，再读 `core`，必要时读 `daily`。
+    - 写入时稳定信息写 `core`，过程性上下文写 `daily`。
+    - 只写稳定、可复用、已确认信息；不写临时猜测。
 
 ## 6. Read/Write Semantics
 
 - Read：
   - 模型在需要历史偏好、既往决策、项目事实时主动读 memory 文件。
+  - 优先读取 `core`；仅在需要近期上下文时读取 `daily`。
 - Write：
-  - 模型在信息“可复用且稳定”时写入对应分层目录。
+  - 模型在信息“可复用且稳定”时写入 `core`。
+  - 会话过程性信息（短期上下文、当天进展）写入 `daily`。
 - Scope：
   - `off`: 不读不写
   - `project`: 仅项目目录
@@ -86,18 +95,11 @@ legacy_session_skill = false   # 兼容旧 /memory show|clear
 - 宿主：只提供规则和路径，不直接管理 memory 内容。
 - 模型：决定读写时机与目标文件。
 
-## 8. Legacy Compatibility
-
-- 旧 `MemorySkill`（会话内内存）保留为兼容路径。
-- 仅当 `memory.legacy_session_skill = true` 时启用 `/memory show|clear`。
-- 默认关闭，避免与新方案冲突。
-
-## 9. Rollout Plan
+## 8. Rollout Plan
 
 ### Phase 1
 
 - 启用目录协议注入（skills + memory）。
-- 默认关闭 legacy session memory。
 
 ### Phase 2
 
