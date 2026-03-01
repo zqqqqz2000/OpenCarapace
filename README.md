@@ -4,6 +4,18 @@ Language: **English** | [简体中文](./README.zh-CN.md)
 
 Channel-first orchestration for code agents on Bun.
 
+## Install
+
+### One-line install (curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zqqqqz2000/OpenCarapace/main/install.sh | bash
+```
+
+### Package managers
+
+- Homebrew / apt / pacman release flow: [docs/release-packaging.md](./docs/release-packaging.md)
+
 ## Tested Scope
 
 - End-to-end tested: `Codex` agent + `Telegram` channel.

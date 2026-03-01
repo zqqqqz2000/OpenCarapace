@@ -4,6 +4,18 @@ Language: [English](./README.md) | **简体中文**
 
 基于 Bun 的 Channel-first 代码 Agent 编排层。
 
+## 安装
+
+### 一行安装（curl）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zqqqqz2000/OpenCarapace/main/install.sh | bash
+```
+
+### 包管理发布与安装
+
+- Homebrew / apt / pacman 方案见：[docs/release-packaging.md](./docs/release-packaging.md)
+
 ## 测试范围说明
 
 - 已完成端到端验证：`Codex` agent + `Telegram` channel。

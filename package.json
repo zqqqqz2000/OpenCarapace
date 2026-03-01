@@ -13,7 +13,9 @@
     "start": "bun run src/cli/server.ts",
     "gateway": "bun run src/cli/gateway.ts",
     "chat": "bun run src/cli/chat.ts",
-    "opencarapace": "bun run src/cli/opencarapace.ts"
+    "opencarapace": "bun run src/cli/opencarapace.ts",
+    "release:build": "./scripts/release/build-artifacts.sh",
+    "release:formula": "./scripts/release/generate-homebrew-formula.sh"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
